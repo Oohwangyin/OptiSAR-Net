@@ -79,7 +79,7 @@ class DetectionValidator(BaseValidator):
 
     def get_desc(self):
         """Return a formatted string summarizing class metrics of YOLO model."""
-        return ("%22s" + "%11s" * 6) % ("Class", "Images", "Instances", "Box(P", "R", "mAP50", "mAP50-95)")
+        return ("%22s" + "%11s" * 6) % ("Class", "Images", "Instances", "Box(P", "R", "mAP50", "mAP50-95")
 
     def postprocess(self, preds):
         """Apply Non-maximum suppression to prediction outputs."""
@@ -171,7 +171,37 @@ class DetectionValidator(BaseValidator):
         self.nt_per_class = np.bincount(
             stats["target_cls"].astype(int), minlength=self.nc
         )  # number of targets per class
-        return self.metrics.results_dict
+        
+        # 获取结果字典
+        results_dict = self.metrics.results_dict
+        
+        # 保存结果为 CSV 文件（仿照训练过程）
+        if not self.training:  # 只在独立验证时保存，不在训练过程中的验证保存
+            csv_path = self.save_dir / "val_results.csv"
+            keys = list(results_dict.keys())
+            vals = list(results_dict.values())
+            n = len(keys)
+            
+            # 写入 CSV
+            with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+                # 写入表头
+                header = ["Metric", "Value"]
+                f.write(",".join(header) + "\n")
+                
+                # 写入各项指标
+                for key, val in zip(keys, vals):
+                    f.write(f"{key},{val:.6f}\n")
+                
+                # 添加额外信息
+                f.write("\n")
+                f.write(f"Images,{self.seen}\n")
+                f.write(f"Instances,{self.nt_per_class.sum()}\n")
+                for i, name in self.names.items():
+                    f.write(f"Class_{name}_instances,{self.nt_per_class[i]}\n")
+            
+            LOGGER.info(f"\n验证结果已保存到：{csv_path}")
+        
+        return results_dict
 
     def print_results(self):
         """Prints training/validation set metrics per class."""
