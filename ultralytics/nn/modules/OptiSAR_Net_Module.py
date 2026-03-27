@@ -140,6 +140,7 @@ class DualAdaptiveAttention(nn.Module):
 
 class DAAM(nn.Module):
     """
+    双层级路由可变性空间金字塔池化
     Dual Attention Adaptive Module (DAAM) that combines attention and ECB
     with optional layer scaling.
     """

@@ -108,33 +108,36 @@ class Model(nn.Module):
             ImportError: If required dependencies for specific model types (like HUB SDK) are not installed.
         """
         super().__init__()
+        # 设置默认的回调函数，用于训练过程中的事件通知
+        # 如：每个 epoch 结束时的进度报告、保存 checkpoint 等
         self.callbacks = callbacks.get_default_callbacks()
-        self.predictor = None  # reuse predictor
-        self.model = None  # model object
-        self.trainer = None  # trainer object
-        self.ckpt = None  # if loaded from *.pt
-        self.cfg = None  # if loaded from *.yaml
-        self.ckpt_path = None
-        self.overrides = {}  # overrides for trainer object
-        self.metrics = None  # validation/training metrics
-        self.session = None  # HUB session
-        self.task = task  # task type
-        model = str(model).strip()
+        self.predictor = None  # 预测器（用于推理）
+        self.model = None  # 实际的 PyTorch 模型对象
+        self.trainer = None  # 训练器（用于训练）
+        self.ckpt = None  # 检查点（从.pt 文件加载时）
+        self.cfg = None  # 配置文件路径（从.yaml 加载时）
+        self.ckpt_path = None   # 检查点文件路径
+        self.overrides = {}  # 覆盖参数（传递给训练器）
+        self.metrics = None  # 评估指标（训练/验证结果）
+        self.session = None  # HUB 会话（如果使用云端服务）
+        self.task = task  # 任务类型
+        model = str(model).strip() # 转为字符串并去除空格
 
         # Check if Ultralytics HUB model from https://hub.ultralytics.com
+        # 检查是否为 Ultralytics HUB 模型
         if self.is_hub_model(model):
-            # Fetch model from HUB
+            # 检查是否安装了HUB SDK--->创建HUB会话--->从云端下载文件路径
             checks.check_requirements("hub-sdk>=0.0.6")
             self.session = self._get_hub_session(model)
             model = self.session.model_file
 
-        # Check if Triton Server model
+        # 检查是否为Triton Server模型
         elif self.is_triton_model(model):
             self.model_name = self.model = model
             self.task = task
             return
 
-        # Load or create new YOLO model
+        # 从本地加载配置。若为.yaml/.yml则从头构建模型；否则为.pt则加载预训练权重
         if Path(model).suffix in (".yaml", ".yml"):
             self._new(model, task=task, verbose=verbose)
         else:
@@ -202,14 +205,15 @@ class Model(nn.Module):
             model (BaseModel): Customized model.
             verbose (bool): display model info on load
         """
-        cfg_dict = yaml_model_load(cfg)
-        self.cfg = cfg
-        self.task = task or guess_model_task(cfg_dict)
+        cfg_dict = yaml_model_load(cfg) # 读取配置文件，并解析为字典
+        self.cfg = cfg  # 保存配置文件路径
+        self.task = task or guess_model_task(cfg_dict) # 根据模型定义推断任务类型。若指定了task，直接使用
         self.model = (model or self._smart_load("model"))(cfg_dict, verbose=verbose and RANK == -1)  # build model
+        # 保存覆盖参数
         self.overrides["model"] = self.cfg
         self.overrides["task"] = self.task
 
-        # Below added to allow export from YAMLs
+        # 设置模型属性，方便后续访问
         self.model.args = {**DEFAULT_CFG_DICT, **self.overrides}  # combine default and model args (prefer model args)
         self.model.task = self.task
         self.model_name = cfg
@@ -222,10 +226,12 @@ class Model(nn.Module):
             weights (str): model checkpoint to be loaded
             task (str | None): model task
         """
+        #下载文件
         if weights.lower().startswith(("https://", "http://", "rtsp://", "rtmp://", "tcp://")):
             weights = checks.check_file(weights)  # automatically download and return local filename
         weights = checks.check_model_file_from_stem(weights)  # add suffix, i.e. yolov8n -> yolov8n.pt
 
+        #打开本地文件
         if Path(weights).suffix == ".pt":
             self.model, self.ckpt = attempt_load_one_weight(weights)
             self.task = self.model.args["task"]

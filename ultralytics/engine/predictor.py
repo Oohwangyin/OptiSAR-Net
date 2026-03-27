@@ -63,6 +63,8 @@ Example:
 class BasePredictor:
     """
     BasePredictor.
+    专门用于处理预测（推理）任务的组件
+    负责输入数据预处理、推理计算、后处理预测结果，以及可视化和保存
 
     A base class for creating predictors.
 

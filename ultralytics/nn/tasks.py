@@ -286,23 +286,28 @@ class BaseModel(nn.Module):
 
 
 class DetectionModel(BaseModel):
-    """YOLOv8 detection model."""
+    """目标检测模型类"""
 
     def __init__(self, cfg="yolov8n.yaml", ch=3, nc=None, verbose=True):  # model, input channels, number of classes
-        """Initialize the YOLOv8 detection model with the given config and parameters."""
+        """
+        cfg：模型配置文件路径；ch：输入通道数；
+        nc：类别数量；verbose：是否打印详细信息；
+        """
         super().__init__()
-        self.yaml = cfg if isinstance(cfg, dict) else yaml_model_load(cfg)  # cfg dict
+        self.yaml = cfg if isinstance(cfg, dict) else yaml_model_load(cfg)  # 加载模型配置
 
-        # Define model
+        # 设置输入通道数
         ch = self.yaml["ch"] = self.yaml.get("ch", ch)  # input channels
+        #  如果提供了类别数 nc 且与配置中的不同，则更新 YAML 文件中的 nc
         if nc and nc != self.yaml["nc"]:
             LOGGER.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
             self.yaml["nc"] = nc  # override YAML value
+        # 解析并构建模型
         self.model, self.save = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)  # model, savelist
         self.names = {i: f"{i}" for i in range(self.yaml["nc"])}  # default names dict
         self.inplace = self.yaml.get("inplace", True)
 
-        # Build strides
+        # 获取模型的最后一层（检测头）
         m = self.model[-1]  # Detect()
         if isinstance(m, Detect):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect
             s = 256  # 2x min stride
@@ -316,14 +321,14 @@ class DetectionModel(BaseModel):
         else:
             self.stride = torch.Tensor([32])  # default stride for i.e. RTDETR
 
-        # Init weights, biases
+        # 初始化模型权重和偏置
         initialize_weights(self)
         if verbose:
             self.info()
             LOGGER.info("")
 
     def _predict_augment(self, x):
-        """Perform augmentations on input image x and return augmented inference and train outputs."""
+        """增强预测方法 对输入图像进行增强预测并返回结果"""
         img_size = x.shape[-2:]  # height, width
         s = [1, 0.83, 0.67]  # scales
         f = [None, 3, None]  # flips (2-ud, 3-lr)
@@ -338,7 +343,7 @@ class DetectionModel(BaseModel):
 
     @staticmethod
     def _descale_pred(p, flips, scale, img_size, dim=1):
-        """De-scale predictions following augmented inference (inverse operation)."""
+        """用于反缩放增强后的预测结果"""
         p[:, :4] /= scale  # de-scale
         x, y, wh, cls = p.split((1, 1, 2, p.shape[dim] - 4), dim)
         if flips == 2:
@@ -348,7 +353,7 @@ class DetectionModel(BaseModel):
         return torch.cat((x, y, wh, cls), dim)
 
     def _clip_augmented(self, y):
-        """Clip YOLO augmented inference tails."""
+        """裁剪 YOLO 增强推理的尾部"""
         nl = self.model[-1].nl  # number of detection layers (P3-P5)
         g = sum(4**x for x in range(nl))  # grid points
         e = 1  # exclude layer count
@@ -359,7 +364,7 @@ class DetectionModel(BaseModel):
         return y
 
     def init_criterion(self):
-        """Initialize the loss criterion for the DetectionModel."""
+        """初始化损失准则方法"""
         return v8DetectionLoss(self)
 
 
@@ -854,6 +859,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
     if verbose:
         LOGGER.info(f"\n{'':>3}{'from':>20}{'n':>3}{'params':>10}  {'module':<45}{'arguments':<30}")
     ch = [ch]
+    # layers存储网络层；save存储需要保存输出的层的索引；c2当前输出通道数
     layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
         m = getattr(torch.nn, m[3:]) if "nn." in m else globals()[m]  # get module
@@ -896,6 +902,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             DAAM,
             VSSA
         }:
+            # c1 上一层的输出通道数；c2 当前层的输出通道数
             c1, c2 = ch[f], args[0]
             if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
                 c2 = make_divisible(min(c2, max_channels) * width, 8)
@@ -904,7 +911,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 args[2] = int(
                     max(round(min(args[2], max_channels // 2 // 32)) * width, 1) if args[2] > 1 else args[2]
                 )  # num heads
-
+            # args = (输入通道，输出通道，kernel_size, stride)
             args = [c1, c2, *args[1:]]
             if m in (BottleneckCSP, C1, C2, C2f, C2fAttn, C3, C3TR, C3Ghost, C3x, RepC3, C2fCIB, VSSA, DAAM):
                 args.insert(2, n)  # number of repeats
