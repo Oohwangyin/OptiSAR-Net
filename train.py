@@ -1,6 +1,6 @@
 from ultralytics import YOLO
 
-model = YOLO("OptiSAR-Net.yaml")
+model = YOLO("OptiSAR-Net.yaml").load('yolov8m.pt')
 
 # 训练参数配置 - 针对类别不平衡优化
 model.train(
