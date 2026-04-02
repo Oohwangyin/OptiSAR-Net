@@ -608,6 +608,71 @@ class BaseTrainer:
         s = "" if self.csv.exists() else (("%23s," * n % tuple(["epoch"] + keys)).rstrip(",") + "\n")  # header
         with open(self.csv, "a") as f:
             f.write(s + ("%23.5g," * n % tuple([self.epoch + 1] + vals)).rstrip(",") + "\n")
+        
+        # 保存按类别的 mAP 结果到单独的文件
+        self.save_class_metrics(metrics)
+    
+    def save_class_metrics(self, metrics):
+        """Saves per-class mAP metrics to a separate CSV file."""
+        # 只在验证后保存（检查是否包含 mAP 指标）
+        if "metrics/mAP50(B)" not in metrics:
+            return
+        
+        class_csv = self.save_dir / "class_metrics.csv"
+        
+        # 尝试从 validator 获取每个类别的详细结果
+        if hasattr(self.validator, 'metrics') and hasattr(self.validator.metrics, 'box'):
+            box_metrics = self.validator.metrics.box
+            nc = box_metrics.nc  # 类别数量
+            names = self.validator.names  # 类别名称字典
+            
+            # 获取每个类别的 mAP50 和 mAP50-95
+            ap50_list = box_metrics.ap50 if len(box_metrics.ap50) else [0.0] * nc
+            ap_list = box_metrics.ap if len(box_metrics.ap) else [0.0] * nc
+            
+            # 准备数据
+            headers = ["epoch"]
+            values = [str(self.epoch + 1)]
+            
+            # 添加每个类别的 mAP50 和 mAP50-95
+            for i in range(nc):
+                class_name = names.get(i, f"class_{i}")
+                headers.extend([
+                    f"class_{i}_{class_name}_mAP50",
+                    f"class_{i}_{class_name}_mAP50-95"
+                ])
+                values.extend([
+                    f"{ap50_list[i]:.6f}" if i < len(ap50_list) else "0.000000",
+                    f"{ap_list[i]:.6f}" if i < len(ap_list) else "0.000000"
+                ])
+            
+            # 添加总体指标
+            headers.extend(["best_mAP50", "best_mAP50-95"])
+            values.extend([
+                f"{metrics.get('metrics/mAP50(B)', 0.0):.6f}",
+                f"{metrics.get('metrics/mAP50-95(B)', 0.0):.6f}"
+            ])
+            
+            # 写入 CSV
+            if not class_csv.exists():
+                with open(class_csv, "w") as f:
+                    f.write(",".join(headers) + "\n")
+            
+            with open(class_csv, "a") as f:
+                f.write(",".join(values) + "\n")
+        else:
+            # 如果无法获取详细的类别指标，使用简化的方式
+            if not class_csv.exists():
+                with open(class_csv, "w") as f:
+                    f.write("epoch,metrics/precision(B),metrics/recall(B),metrics/mAP50(B),metrics/mAP50-95(B),fitness\n")
+            
+            with open(class_csv, "a") as f:
+                f.write(f"{self.epoch + 1}," +
+                       f"{metrics.get('metrics/precision(B)', 0.0):.6f}," +
+                       f"{metrics.get('metrics/recall(B)', 0.0):.6f}," +
+                       f"{metrics.get('metrics/mAP50(B)', 0.0):.6f}," +
+                       f"{metrics.get('metrics/mAP50-95(B)', 0.0):.6f}," +
+                       f"{metrics.get('fitness', 0.0):.6f}\n")
 
     def plot_metrics(self):
         """Plot and display metrics visually."""
