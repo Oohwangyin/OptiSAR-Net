@@ -20,22 +20,20 @@ model.train(
     box=7.5,  # box loss gain
     cls=3.0,  # cls loss gain (从 1.5 提高到 3.0，大幅增强分类损失权重)
     dfl=1.5,  # dfl loss gain
-    # 数据增强策略 - 增强小样本可见性
-    hsv_h=0.02,  # HSV-Hue augmentation (略微增加)
-    hsv_s=0.8,  # HSV-Saturation augmentation (增加)
-    hsv_v=0.5,  # HSV-Value augmentation (增加)
-    degrees=15.0,  # rotation augmentation (遥感图像旋转不变性)
-    translate=0.2,  # translation augmentation (增加)
-    scale=0.8,  # scale augmentation (增强多尺度)
-    shear=5.0,  # shear augmentation (轻微剪切)
-    perspective=0.0,  # perspective augmentation
-    flipud=0.1,  # probability of flip up-down (增加上下翻转)
-    fliplr=0.5,  # probability of flip left-right
-    mosaic=1.0,  # probability of mosaic augmentation (保持)
-    mixup=0.15,  # probability of mixup augmentation (略微增加)
-    copy_paste=0.5,  # probability of copy-paste augmentation (增加到 0.5，复制小样本目标)
-    # 训练策略
-    patience=100,  # 增加 patience，允许更长时间收敛
+    hsv_h=0.0,  # SAR 没有色调信息，禁用
+    hsv_s=0.0,  # 饱和度不变
+    hsv_v=0.0,  # 亮度变化会改变后向散射特性，谨慎使用
+    degrees=0.0,  # SAR 几何校正后不应旋转
+    translate=0.05,  # 微小平移增强泛化
+    scale=0.3,  # 尺度变化（SAR 目标尺度变化较大）
+    shear=0.0,  # 剪切会破坏几何精度
+    perspective=0.0,  # 透视变换不适用
+    flipud=0.0,  # SAR 垂直翻转会改变目标方向（一般不使用）
+    fliplr=0.3,  # 水平翻转（如果目标方向无关）
+    mosaic=0.5,  # mosaic 仍有效，但降低概率避免引入过多噪声
+    mixup=0.0,  # mixup 可能混合 SAR 目标与背景，效果不确定
+    copy_paste=0.0,  # 复制粘贴会破坏 SAR 背景一致性
+    patience=50,  # 小数据集可以适当减少 patience
     save_period=10,  # Save checkpoint every x epochs
     seed=42,  # random seed
     exist_ok=False,  # overwrite existing experiment
