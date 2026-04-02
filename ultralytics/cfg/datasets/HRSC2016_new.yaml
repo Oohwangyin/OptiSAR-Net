@@ -1,0 +1,14 @@
+
+# HRSC2016 dataset converted to YOLO format (single-modal optical)
+
+path: ../OptiSAR-Net/datasets/HRSC2016_new
+train: images/train
+val: images/val
+test: images/test  # 如果有测试集的话
+
+nc: 1
+names:
+  0: ship
+
+# 可选：数据增强参数
+flip_idx: []  # 如果没有特殊需求，保持空列表

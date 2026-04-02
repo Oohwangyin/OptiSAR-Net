@@ -1,0 +1,25 @@
+# Ultralytics YOLO 🚀, AGPL-3.0 license
+# M4-SAR-sampled dataset for multi-class ship detection
+
+# parent
+# ├── ultralytics
+# └── datasets
+#     └── M4-SAR-sampled
+
+# Train/val/test sets as 1) dir: path/to/imgs, 2) file: path/to/imgs.txt, or 3) list: [path/to/imgs1, path/to/imgs2, ..]
+path: ../OptiSAR-Net/datasets/M4-SAR-sampled  # 修改为你的数据集根目录路径
+train: images/train
+val: images/val
+test: images/test
+
+# 6 个类别，标签从 0 到 5
+names:
+  0: bridge  # 桥梁
+  1: harbor  # 港口
+  2: oil_tank  # 邮轮
+  3: playground  # 游乐场
+  4: airport  # 机场
+  5: wind_turbine  # 风力涡轮机
+
+# 可选：如果有下载脚本
+# download: your_download_script.sh

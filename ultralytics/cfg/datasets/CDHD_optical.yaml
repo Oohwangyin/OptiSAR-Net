@@ -1,0 +1,9 @@
+# 只包含光学测试图像的数据集配置
+path: ../OptiSAR-Net/datasets/CDHD_optical
+train: images   # 无训练集，但 YAML 要求此项存在，可留空或指向 images
+val: images     # 验证集也用 images（测试时实际使用 test 字段）
+test: images
+
+names:
+  0: opt_ship
+  1: sar_ship

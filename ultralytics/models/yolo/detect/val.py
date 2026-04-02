@@ -171,36 +171,39 @@ class DetectionValidator(BaseValidator):
         self.nt_per_class = np.bincount(
             stats["target_cls"].astype(int), minlength=self.nc
         )  # number of targets per class
-        
+
         # 获取结果字典
         results_dict = self.metrics.results_dict
-        
+
         # 保存结果为 CSV 文件（仿照训练过程）
         if not self.training:  # 只在独立验证时保存，不在训练过程中的验证保存
             csv_path = self.save_dir / "val_results.csv"
             keys = list(results_dict.keys())
             vals = list(results_dict.values())
-            n = len(keys)
-            
-            # 写入 CSV
+
+            # 构建完整的列名和值
+            headers = keys.copy()  # 指标列名
+            values = [f"{v:.6f}" for v in vals]  # 指标值（保留6位小数）
+
+            # 添加额外信息
+            headers.append("Images")
+            values.append(str(self.seen))
+
+            headers.append("Instances")
+            values.append(str(self.nt_per_class.sum()))
+
+            for i, name in self.names.items():
+                col_name = f"Class_{name}_instances"
+                headers.append(col_name)
+                values.append(str(self.nt_per_class[i]))
+
+            # 写入 CSV（一行表头 + 一行数据）
             with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-                # 写入表头
-                header = ["Metric", "Value"]
-                f.write(",".join(header) + "\n")
-                
-                # 写入各项指标
-                for key, val in zip(keys, vals):
-                    f.write(f"{key},{val:.6f}\n")
-                
-                # 添加额外信息
-                f.write("\n")
-                f.write(f"Images,{self.seen}\n")
-                f.write(f"Instances,{self.nt_per_class.sum()}\n")
-                for i, name in self.names.items():
-                    f.write(f"Class_{name}_instances,{self.nt_per_class[i]}\n")
-            
+                f.write(",".join(headers) + "\n")
+                f.write(",".join(values) + "\n")
+
             LOGGER.info(f"\n验证结果已保存到：{csv_path}")
-        
+
         return results_dict
 
     def print_results(self):

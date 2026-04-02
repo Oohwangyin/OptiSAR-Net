@@ -1,0 +1,36 @@
+# Ultralytics YOLO 🚀, AGPL-3.0 license
+# HRSC2016_YOLO dataset for fine-grained ship classification
+# Contains 4 classes: aircraft_carrier, warship, merchant_ship, submarine
+
+# Dataset structure:
+# datasets/HRSC2016_YOLO/
+# ├── images/
+# │   ├── train/
+# │   └── val/
+# └── labels/
+#     ├── train/
+#     └── val/
+
+path: ../OptiSAR-Net/datasets/HRSC2016_YOLO
+train: images/train
+val: images/val
+test: images/test  # optional, if exists
+
+# Class distribution (imbalanced):
+# - 航母 (aircraft_carrier): 63 images
+# - 军舰 (warship): majority class
+# - 商船 (merchant_ship): 45 images
+# - 潜艇 (submarine): 89 images
+
+names:
+  0: aircraft_carrier  # 航母
+  1: warship           # 军舰
+  2: merchant_ship     # 商船
+  3: submarine         # 潜艇
+
+# Class weights for handling imbalanced dataset
+# Higher weights for underrepresented classes
+class_weights: [2.5, 1.0, 3.0, 3.5]
+
+# Flip indices for data augmentation (if needed)
+flip_idx: []
