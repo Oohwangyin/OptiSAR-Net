@@ -1,178 +1,253 @@
-#!/usr/bin/env python3
 """
-验证 YOLO 格式标注的正确性，并统计各类别实例数量。
-用法:
-    python verify_dataset.py --data_root ../datasets/M4-SAR-sampled --split train --num_samples 5
+DOTAv1 数据集类别统计脚本
+用于统计数据集中每个类别的实例数量
 """
 
 import os
-import random
-import argparse
-from collections import defaultdict
 from pathlib import Path
-
-import cv2
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
+from collections import Counter, defaultdict
+import yaml
+from ultralytics.utils import LOGGER
 
 
-def parse_yolo_label(label_path, img_w, img_h):
+def img2label_paths(img_paths):
+    """从图像路径生成对应的标签路径"""
+    sa, sb = f'{os.sep}images', f'{os.sep}labels'  # /images, /labels
+    return [sb.join(p.rsplit(sa, 1)).rsuffix('.txt') for p in img_paths]
+
+
+def get_image_paths(data_dir, split='train'):
+    """获取指定 split 的所有图像路径"""
+    images_dir = Path(data_dir) / 'images' / split
+
+    if not images_dir.exists():
+        LOGGER.warning(f"目录不存在：{images_dir}")
+        return []
+
+    # 支持常见的图像格式
+    image_formats = {'.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.webp'}
+    image_paths = []
+
+    for ext in image_formats:
+        image_paths.extend(images_dir.glob(f'*{ext}'))
+        image_paths.extend(images_dir.glob(f'*{ext.upper()}'))
+
+    return sorted(image_paths)
+
+
+def parse_label_file(label_path):
     """
-    解析 YOLO 格式的标签文件，返回边界框列表。
-    每行: class_id x_center y_center width height (归一化)
-    返回: list of (class_id, x1, y1, x2, y2) 像素坐标
+    解析 YOLO 格式的标签文件
+    返回该文件中所有目标的类别索引列表
     """
-    bboxes = []
-    if not os.path.exists(label_path):
-        return bboxes
-    with open(label_path, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split()
-            if len(parts) != 5:
-                print(f"警告: 标签格式错误 (应为5个值): {line}")
-                continue
-            try:
-                cls = int(parts[0])
-                x_c = float(parts[1])
-                y_c = float(parts[2])
-                w = float(parts[3])
-                h = float(parts[4])
-                # 转换为像素坐标
-                x1 = int((x_c - w/2) * img_w)
-                y1 = int((y_c - h/2) * img_h)
-                x2 = int((x_c + w/2) * img_w)
-                y2 = int((y_c + h/2) * img_h)
-                # 边界裁剪
-                x1 = max(0, x1)
-                y1 = max(0, y1)
-                x2 = min(img_w, x2)
-                y2 = min(img_h, y2)
-                if x2 > x1 and y2 > y1:
-                    bboxes.append((cls, x1, y1, x2, y2))
-            except ValueError:
-                print(f"警告: 解析数值错误: {line}")
-                continue
-    return bboxes
+    classes = []
 
+    if not Path(label_path).exists():
+        return classes
 
-def count_classes_in_split(data_root, split):
-    """
-    统计指定 split 中所有标签文件的类别实例数量。
-    """
-    label_dir = data_root / 'labels' / split
-    if not label_dir.exists():
-        print(f"错误: 标签目录不存在 {label_dir}")
-        return defaultdict(int)
-
-    class_counts = defaultdict(int)
-    # 遍历所有标签文件（optical_xxx.txt 或 sar_xxx.txt，避免重复计数）
-    # 我们只统计 optical_ 前缀的标签文件，因为内容与 sar 相同
-    for label_file in label_dir.glob('optical_*.txt'):
-        with open(label_file, 'r') as f:
+    try:
+        with open(label_path, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
-                if not line:
+                if not line:  # 跳过空行
                     continue
+
                 parts = line.split()
-                if len(parts) >= 1:
-                    try:
-                        cls = int(parts[0])
-                        class_counts[cls] += 1
-                    except ValueError:
-                        continue
-    return class_counts
+                if len(parts) >= 5:  # YOLO 格式：class x y w h (至少 5 个值)
+                    class_idx = int(parts[0])
+                    classes.append(class_idx)
+    except Exception as e:
+        LOGGER.warning(f"读取标签文件失败 {label_path}: {e}")
+
+    return classes
 
 
-def visualize_random_samples(data_root, split, num_samples=5, seed=42):
+def count_instances(data_dir, splits=None):
     """
-    随机抽取 num_samples 张图像，绘制边界框并显示。
+    统计数据集中各类别的实例数量
+
+    Args:
+        data_dir (str | Path): 数据集根目录
+        splits (list, optional): 要统计的数据集划分，如 ['train', 'val', 'test']
+                                默认为 None，自动检测存在的划分
+
+    Returns:
+        dict: 包含统计结果的字典
     """
-    img_dir = data_root / 'images' / split
-    label_dir = data_root / 'labels' / split
-    if not img_dir.exists() or not label_dir.exists():
-        print(f"错误: 图像或标签目录不存在: {img_dir} 或 {label_dir}")
-        return
+    data_dir = Path(data_dir)
 
-    # 获取所有光学图像文件
-    image_files = list(img_dir.glob('optical_*.jpg')) + list(img_dir.glob('optical_*.png'))
-    if not image_files:
-        print(f"错误: 在 {img_dir} 中没有找到 optical_ 图像")
-        return
+    # 加载 dataset YAML 配置（如果存在）
+    yaml_files = list(data_dir.glob('*.yaml'))
+    class_names = {}
+    if yaml_files:
+        try:
+            with open(yaml_files[0], 'r', encoding='utf-8') as f:
+                data_config = yaml.safe_load(f)
+                if 'names' in data_config:
+                    class_names = data_config['names']
+                    LOGGER.info(f"从配置文件加载类别名称：{len(class_names)} 类")
+        except Exception as e:
+            LOGGER.warning(f"加载 YAML 配置文件失败：{e}")
 
-    random.seed(seed)
-    selected = random.sample(image_files, min(num_samples, len(image_files)))
+    # 默认统计所有可能的划分
+    if splits is None:
+        splits = []
+        for split in ['train', 'val', 'test']:
+            if (data_dir / 'images' / split).exists():
+                splits.append(split)
 
-    for img_path in selected:
-        # 读取图像
-        img = cv2.imread(str(img_path))
-        if img is None:
-            print(f"无法读取图像: {img_path}")
+    if not splits:
+        LOGGER.error("未找到任何有效的数据集划分 (train/val/test)")
+        return {}
+
+    LOGGER.info(f"开始统计以下数据集划分：{splits}")
+
+    # 统计结果
+    total_counter = Counter()  # 总计
+    split_counters = {}  # 各划分的统计
+
+    for split in splits:
+        LOGGER.info(f"\n处理 {split} 集...")
+
+        # 获取所有图像路径
+        image_paths = get_image_paths(data_dir, split)
+
+        if not image_paths:
+            LOGGER.warning(f"{split} 集没有找到图像文件")
             continue
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        h, w = img.shape[:2]
 
-        # 对应的标签文件
-        label_name = img_path.name.replace('optical_', 'optical_').replace('.jpg', '.txt').replace('.png', '.txt')
-        label_path = label_dir / label_name
-        if not label_path.exists():
-            print(f"标签文件不存在: {label_path}")
-            continue
+        label_paths = img2label_paths([str(p) for p in image_paths])
 
-        bboxes = parse_yolo_label(label_path, w, h)
+        counter = Counter()
+        valid_images = 0
+        no_label_images = 0
 
-        # 绘制
-        fig, ax = plt.subplots(1, figsize=(12, 8))
-        ax.imshow(img_rgb)
-        for cls, x1, y1, x2, y2 in bboxes:
-            rect = patches.Rectangle((x1, y1), x2-x1, y2-y1, linewidth=2, edgecolor='red', facecolor='none')
-            ax.add_patch(rect)
-            ax.text(x1, y1-5, f'Class {cls}', color='red', fontsize=10, backgroundcolor='white')
-        ax.set_title(f"{img_path.name}  (共 {len(bboxes)} 个目标)")
-        plt.axis('off')
-        plt.tight_layout()
-        plt.show()
+        for img_path, lb_path in zip(image_paths, label_paths):
+            if Path(lb_path).exists():
+                classes = parse_label_file(lb_path)
+                if classes:
+                    counter.update(classes)
+                    valid_images += 1
+                else:
+                    no_label_images += 1
+            else:
+                no_label_images += 1
+
+        split_counters[split] = {
+            'counter': counter,
+            'total_images': len(image_paths),
+            'valid_images': valid_images,
+            'no_label_images': no_label_images
+        }
+
+        # 累加到总计
+        total_counter.update(counter)
+
+        LOGGER.info(f"{split} 集：{len(image_paths)} 张图像，"
+                   f"{valid_images} 张有标注，{no_label_images} 张无标注")
+        LOGGER.info(f"{split} 集实例总数：{sum(counter.values())}")
+
+    # 打印统计结果
+    print("\n" + "="*80)
+    print("DOTAv1 数据集类别统计结果".center(80))
+    print("="*80)
+
+    # 表头
+    print(f"\n{'类别 ID':<10} {'类别名称':<25} {'训练集':<12} {'验证集':<12} {'测试集':<12} {'总计':<10} {'占比':<10}")
+    print("-"*80)
+
+    total_instances = sum(total_counter.values())
+
+    # 按类别 ID 排序输出
+    all_classes = sorted(total_counter.keys())
+
+    for class_idx in all_classes:
+        class_name = class_names.get(class_idx, f"class_{class_idx}")
+
+        train_count = split_counters.get('train', {}).get('counter', Counter()).get(class_idx, 0)
+        val_count = split_counters.get('val', {}).get('counter', Counter()).get(class_idx, 0)
+        test_count = split_counters.get('test', {}).get('counter', Counter()).get(class_idx, 0)
+        total_count = total_counter.get(class_idx, 0)
+
+        percentage = (total_count / total_instances * 100) if total_instances > 0 else 0
+
+        print(f"{class_idx:<10} {class_name:<25} {train_count:<12} {val_count:<12} {test_count:<12} {total_count:<10} {percentage:>9.2f}%")
+
+    print("-"*80)
+    print(f"{'总计':<37} {split_counters.get('train', {}).get('counter', Counter()).sum():<12} "
+          f"{split_counters.get('val', {}).get('counter', Counter()).sum():<12} "
+          f"{split_counters.get('test', {}).get('counter', Counter()).sum():<12} "
+          f"{total_instances:<10} {100.0:>9.2f}%")
+    print("="*80)
+
+    # 输出图像数量统计
+    print("\n图像数量统计:")
+    for split in splits:
+        if split in split_counters:
+            info = split_counters[split]
+            print(f"  {split:8s}: {info['total_images']:4d} 张图像，"
+                  f"{info['valid_images']:4d} 张有标注，"
+                  f"{info['no_label_images']:4d} 张无标注")
+
+    print("="*80 + "\n")
+
+    # 返回统计结果
+    return {
+        'class_names': class_names,
+        'total_counter': dict(total_counter),
+        'split_counters': {k: v['counter'] for k, v in split_counters.items()},
+        'image_stats': {k: {kk: vv for kk, vv in v.items() if kk != 'counter'}
+                       for k, v in split_counters.items()},
+        'total_instances': total_instances
+    }
 
 
 def main():
-    parser = argparse.ArgumentParser(description='验证 YOLO 标注并统计类别数量')
-    parser.add_argument('--data_root', type=str, default='../datasets/M4-SAR-sampled_0.1',
-                        help='数据集根目录')
-    parser.add_argument('--split', type=str, default='train',
-                        choices=['train', 'val', 'test'],
-                        help='要验证的数据集划分')
-    parser.add_argument('--num_samples', type=int, default=5,
-                        help='随机可视化的图像数量')
-    parser.add_argument('--seed', type=int, default=42,
-                        help='随机种子')
-    args = parser.parse_args()
+    """主函数"""
+    # 配置数据集路径
+    # 相对路径（相对于当前工作目录或项目根目录）
+    dataset_path = Path(__file__).parent.parent / 'datasets' / 'DOTAv1'
 
-    data_root = Path(args.data_root).resolve()
-    if not data_root.exists():
-        print(f"错误: 数据集根目录不存在: {data_root}")
+    # 如果上面路径不存在，可以尝试绝对路径
+    if not dataset_path.exists():
+        # Windows 系统示例
+        dataset_path = Path(r'D:\ProjectCode\PycharmProjects\OptiSAR-Net\datasets\DOTAv1')
+
+    # 检查数据集是否存在
+    if not dataset_path.exists():
+        LOGGER.error(f"数据集路径不存在：{dataset_path}")
+        LOGGER.info("请修改 dataset_path 变量指向正确的 DOTAv1 数据集路径")
         return
 
-    print(f"数据集根目录: {data_root}")
-    print(f"验证 split: {args.split}")
+    LOGGER.info(f"数据集路径：{dataset_path}")
 
-    # 统计类别数量
-    print("\n正在统计各类别实例数量...")
-    class_counts = count_classes_in_split(data_root, args.split)
-    if not class_counts:
-        print("未找到任何标签文件或没有有效标注。")
-    else:
-        print(f"\n{args.split} 集中各类别实例数量:")
-        for cls_id in sorted(class_counts.keys()):
-            print(f"  类别 {cls_id}: {class_counts[cls_id]} 个实例")
-        total = sum(class_counts.values())
-        print(f"  总计: {total} 个实例")
+    # 执行统计
+    results = count_instances(dataset_path, splits=['train', 'val', 'test'])
 
-    # 可视化随机样本
-    print(f"\n随机抽取 {args.num_samples} 张图像进行可视化...")
-    visualize_random_samples(data_root, args.split, args.num_samples, args.seed)
+    if not results:
+        LOGGER.error("统计失败，请检查数据集路径和格式")
+        return
+
+    # 可选：保存统计结果到文件
+    save_path = dataset_path / 'dataset_statistics.yaml'
+    try:
+        stats_to_save = {
+            'class_names': results['class_names'],
+            'total_instances': results['total_instances'],
+            'total_per_class': results['total_counter'],
+            'per_split': {
+                split: dict(counter)
+                for split, counter in results['split_counters'].items()
+            },
+            'image_stats': results['image_stats']
+        }
+
+        with open(save_path, 'w', encoding='utf-8') as f:
+            yaml.dump(stats_to_save, f, allow_unicode=True, default_flow_style=False)
+
+        LOGGER.info(f"统计结果已保存到：{save_path}")
+    except Exception as e:
+        LOGGER.error(f"保存统计结果失败：{e}")
 
 
 if __name__ == '__main__':
