@@ -828,3 +828,88 @@ class SCDown(nn.Module):
         return self.cv2(self.cv1(x))
 
 
+class CoordAtt(nn.Module):
+    """
+    Coordinate Attention (CA) mechanism.
+    
+    Paper: "Coordinate Attention for Efficient Mobile Network Design" (CVPR 2021)
+    https://arxiv.org/abs/2103.02907
+    
+    This module embeds position-sensitive information into channel attention,
+    enabling the network to localize and identify objects more accurately.
+    """
+    
+    def __init__(self, c1, reduction=32):
+        """
+        Initialize Coordinate Attention module.
+        
+        Args:
+            c1 (int): Number of input channels.
+            reduction (int): Reduction ratio for channel dimension in attention computation.
+        """
+        super().__init__()
+        
+        # Pooling operations for horizontal and vertical directions
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))  # Horizontal pooling: (B, C, H, W) -> (B, C, H, 1)
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))  # Vertical pooling: (B, C, H, W) -> (B, C, 1, W)
+        
+        # Calculate intermediate channels
+        mid_channels = max(8, c1 // reduction)
+        
+        # Convolution for concatenating horizontal and vertical features
+        self.conv1 = Conv(c1, mid_channels, k=1, act=nn.ReLU(inplace=True))
+        
+        # Separate convolutions for horizontal and vertical attention
+        self.conv_h = nn.Conv2d(mid_channels, c1, kernel_size=1, stride=1, padding=0)
+        self.conv_w = nn.Conv2d(mid_channels, c1, kernel_size=1, stride=1, padding=0)
+        
+        # Activation function
+        self.sigmoid = nn.Sigmoid()
+    
+    def forward(self, x):
+        """
+        Forward pass through Coordinate Attention module.
+        
+        Args:
+            x (Tensor): Input tensor of shape (B, C, H, W).
+            
+        Returns:
+            Tensor: Output tensor with coordinate attention applied.
+        """
+        identity = x
+        
+        n, c, h, w = x.size()
+        
+        # Apply horizontal and vertical pooling
+        x_h = self.pool_h(x)  # (B, C, H, 1)
+        x_w = self.pool_w(x)  # (B, C, 1, W)
+        
+        # Concatenate along spatial dimension
+        # x_cat: (B, C, H, W+1) where last column is from x_w
+        x_cat = torch.cat([x_h.repeat(1, 1, 1, w), x_w.repeat(1, 1, h, 1)], dim=3)
+        
+        # Alternative approach: concatenate height and width info separately
+        # This is the standard implementation from the paper
+        y = torch.cat([self.pool_h(x), self.pool_w(x).transpose(2, 3)], dim=3)
+        
+        # Apply convolution to get mixed features
+        y = self.conv1(y)
+        
+        # Split back to horizontal and vertical components
+        x_h, x_w = torch.split(y, [h, w], dim=3)
+        
+        # Apply separate convolutions
+        x_h = self.conv_h(x_h)  # (B, C, H, 1)
+        x_w = self.conv_w(x_w).transpose(2, 3)  # (B, C, H, 1) -> (B, C, 1, W)
+        
+        # Apply sigmoid activation
+        a_h = self.sigmoid(x_h)
+        a_w = self.sigmoid(x_w)
+        
+        # Apply attention weights to original feature
+        # Expand weights to match input dimensions
+        out = identity * a_h * a_w
+        
+        return out
+
+
