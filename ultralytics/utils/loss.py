@@ -171,6 +171,10 @@ class v8DetectionLoss:
         self.assigner = TaskAlignedAssigner(topk=tal_topk, num_classes=self.nc, alpha=0.5, beta=6.0)
         self.bbox_loss = BboxLoss(m.reg_max - 1, use_dfl=self.use_dfl).to(device)
         self.proj = torch.arange(m.reg_max, dtype=torch.float, device=device)
+        
+        # Focal Loss support
+        self.use_focal_loss = getattr(h, 'use_focal_loss', False)
+        self.focal_loss = FocalLoss()
 
     def preprocess(self, targets, batch_size, scale_tensor):
         """Preprocesses the target counts and matches with the input batch size to output a tensor."""
@@ -234,9 +238,12 @@ class v8DetectionLoss:
 
         target_scores_sum = max(target_scores.sum(), 1)
 
-        # Cls loss
+        # Cls loss - Support both BCE and Focal Loss
         # loss[1] = self.varifocal_loss(pred_scores, target_scores, target_labels) / target_scores_sum  # VFL way
-        loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+        if self.use_focal_loss:
+            loss[1] = self.focal_loss(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum
+        else:
+            loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
 
         # Bbox loss
         if fg_mask.sum():
@@ -308,9 +315,12 @@ class v8SegmentationLoss(v8DetectionLoss):
 
         target_scores_sum = max(target_scores.sum(), 1)
 
-        # Cls loss
+        # Cls loss - Support both BCE and Focal Loss
         # loss[1] = self.varifocal_loss(pred_scores, target_scores, target_labels) / target_scores_sum  # VFL way
-        loss[2] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+        if self.use_focal_loss:
+            loss[2] = self.focal_loss(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum
+        else:
+            loss[2] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
 
         if fg_mask.sum():
             # Bbox loss
@@ -488,9 +498,12 @@ class v8PoseLoss(v8DetectionLoss):
 
         target_scores_sum = max(target_scores.sum(), 1)
 
-        # Cls loss
+        # Cls loss - Support both BCE and Focal Loss
         # loss[1] = self.varifocal_loss(pred_scores, target_scores, target_labels) / target_scores_sum  # VFL way
-        loss[3] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+        if self.use_focal_loss:
+            loss[3] = self.focal_loss(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum
+        else:
+            loss[3] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
 
         # Bbox loss
         if fg_mask.sum():
@@ -683,9 +696,12 @@ class v8OBBLoss(v8DetectionLoss):
 
         target_scores_sum = max(target_scores.sum(), 1)
 
-        # Cls loss
+        # Cls loss - Support both BCE and Focal Loss
         # loss[1] = self.varifocal_loss(pred_scores, target_scores, target_labels) / target_scores_sum  # VFL way
-        loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+        if self.use_focal_loss:
+            loss[1] = self.focal_loss(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum
+        else:
+            loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
 
         # Bbox loss
         if fg_mask.sum():
