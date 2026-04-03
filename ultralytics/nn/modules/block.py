@@ -913,3 +913,39 @@ class CoordAtt(nn.Module):
         return out
 
 
+class C2fCA(C2f):
+    """
+    C2f module with Coordinate Attention (CA).
+    
+    This module integrates Coordinate Attention into the C2f bottleneck structure,
+    enhancing spatial awareness and feature representation for object detection.
+    
+    Args:
+        c1 (int): Number of input channels.
+        c2 (int): Number of output channels.
+        n (int): Number of Bottleneck layers.
+        shortcut (bool): Whether to use shortcut connection.
+        g (int): Number of groups for grouped convolution.
+        e (float): Expansion ratio for hidden channels.
+        reduction (int): Reduction ratio for Coordinate Attention.
+    """
+    
+    def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5, reduction=32):
+        """Initialize C2fCA with Coordinate Attention."""
+        super().__init__(c1, c2, n, shortcut, g, e)
+        
+        # Add Coordinate Attention after the main C2f block
+        mid_channels = int(c2 * e) + (n + 1) * mid_channels if hasattr(self, 'c') else c2
+        self.ca = CoordAtt(c2, reduction=reduction)
+    
+    def forward(self, x):
+        """Forward pass through C2fCA layer."""
+        # First apply C2f operations
+        y = list(self.cv1(x).chunk(2, 1))
+        y.extend(m(y[-1]) for m in self.m)
+        x_out = self.cv2(torch.cat(y, 1))
+        
+        # Then apply Coordinate Attention
+        return self.ca(x_out)
+
+
