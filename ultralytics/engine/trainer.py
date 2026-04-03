@@ -630,7 +630,7 @@ class BaseTrainer:
             ap50_list = box_metrics.ap50 if len(box_metrics.ap50) else [0.0] * nc
             ap_list = box_metrics.ap if len(box_metrics.ap) else [0.0] * nc
             
-            # 准备数据
+            # 准备表头和数据
             headers = ["epoch"]
             values = [str(self.epoch + 1)]
             
