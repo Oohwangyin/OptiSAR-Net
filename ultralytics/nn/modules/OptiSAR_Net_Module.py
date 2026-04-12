@@ -457,6 +457,9 @@ class BSPPF(nn.Module):
         self.m = nn.MaxPool2d(kernel_size=k, stride=1, padding=k // 2)
         self.brda = BiLevelRoutingDeformableAttention(c_)
 
+        # [新增]：引入动态尺度加权模块，输入通道数是拼接后的 c_ * 4
+        self.scale_weighting = DynamicScaleWeighting(c_ * 4)
+
     def forward(self, x):
         x = self.cv1(x)
 
@@ -475,8 +478,14 @@ class BSPPF(nn.Module):
         y2 = F.max_pool2d(y1, kernel_size=5, stride=1, padding=2)  # 累积感受野 9
         y3 = F.max_pool2d(y2, kernel_size=5, stride=1, padding=2)  # 累积感受野 13
 
-        # 拼接原始特征与三层池化特征，总通道数为 c_ * 4
-        return self.cv2(torch.cat((x, y1, y2, y3), 1))
+        # 拼接原始特征与三层池化特征 (总通道数: c_ * 4)
+        cat_features = torch.cat((x, y1, y2, y3), 1)
+
+        # [核心改动]：让网络自适应判断这 4 个分支哪些是有用的（对光学重用大核，对 SAR 抑制大核）
+        weighted_features = self.scale_weighting(cat_features)
+
+        # 降维输出
+        return self.cv2(weighted_features)
 
 
 class SpatialShuffleAttention(nn.Module):
@@ -652,3 +661,26 @@ class VSSA(nn.Module):
         output = self.conv_output(combined_features)
 
         return output
+
+class DynamicScaleWeighting(nn.Module):
+    """
+    轻量级通道注意力模块，用于自适应调整 BSPPF 中不同池化分支的权重。
+    解决跨模态（光学 vs SAR）大/小感受野的冲突。
+    """
+    def __init__(self, channels, reduction=4):
+        super().__init__()
+        # 全局平均池化，提取每个通道的全局上下文信息
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        # 降维->激活->升维->Sigmoid，生成 0~1 的权重
+        self.fc = nn.Sequential(
+            nn.Linear(channels, channels // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channels // reduction, channels, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y.expand_as(x)

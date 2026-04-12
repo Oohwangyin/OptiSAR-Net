@@ -10,6 +10,6 @@ model.train(
     epochs=100,
     batch=16,             # 增加 Topk 和池化分支后显存占用会增加，如报错请调小 batch
     imgsz=800,
-    project="runs/airplane-OptiSAR",
+    project="runs/airplane/OptisarNet/+SE",
     device=0              # 指定 GPU
 )
