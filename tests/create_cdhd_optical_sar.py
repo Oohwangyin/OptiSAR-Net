@@ -12,14 +12,14 @@ from pathlib import Path
 
 # ========== 配置路径 ==========
 # CDHD 数据集根目录（请修改为你的实际路径）
-CDHD_ROOT = "/root/autodl-tmp/OptiSAR-Net/datasets/CDHD"
+CDHD_ROOT = "/root/autodl-tmp/OptiSAR-Net/datasets/CORS-SAR"
 
 # 输出根目录（两个子数据集将创建在此目录下）
 OUTPUT_BASE = "/root/autodl-tmp/OptiSAR-Net/datasets"
 
 # 子数据集名称
-OPTICAL_OUTPUT = "CDHD_optical"
-SAR_OUTPUT = "CDHD_sar"
+OPTICAL_OUTPUT = "CORS-SAR_optical"
+SAR_OUTPUT = "CORS-SAR_sar"
 
 # 子目录名称（与 CDHD 内部结构一致）
 IMAGE_SUBDIR = "images"
@@ -30,8 +30,8 @@ VAL_IMAGES_DIR = os.path.join(CDHD_ROOT, IMAGE_SUBDIR, "val")
 VAL_LABELS_DIR = os.path.join(CDHD_ROOT, LABEL_SUBDIR, "val")
 
 # 文件名前缀区分光学和 SAR
-OPTICAL_PREFIX = "HRSC2016_"
-SAR_PREFIX = "HRSID_"
+OPTICAL_PREFIX = "optical_"
+SAR_PREFIX = "sar_"
 
 # ========== 辅助函数 ==========
 def create_dataset(dataset_name, prefix, src_images_dir, src_labels_dir, output_base):

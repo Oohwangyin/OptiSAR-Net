@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-检查 M4-SAR 数据集的完整性：
+检查 CORS-SAR 数据集的完整性：
 1. 检查光学图像与 SAR 图像是否配对
 2. 检查图像是否有对应的标注文件
-3. 统计缺失和多余的图像/标签
+3. 统计各数据集中的实例个数（目标检测框数量）
 
 用法:
-    python check_dataset.py --data_root ../datasets/M4-SAR-sampled_0.1
+    python check_dataset.py --data_root ../datasets/CORS-SAR
 """
 
 import os
@@ -72,6 +72,38 @@ def get_label_files(label_dir):
     return optical_labels, sar_labels, optical_label_files, sar_label_files
 
 
+def count_instances_in_label(label_path):
+    """
+    统计标签文件中的实例数量（非空行数）。
+    返回：(总实例数, 类别0实例数, 类别1实例数)
+    """
+    total = 0
+    class_0_count = 0
+    class_1_count = 0
+    
+    try:
+        with open(label_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split()
+                if len(parts) >= 1:
+                    total += 1
+                    try:
+                        cls_id = int(parts[0])
+                        if cls_id == 0:
+                            class_0_count += 1
+                        elif cls_id == 1:
+                            class_1_count += 1
+                    except ValueError:
+                        pass
+    except Exception as e:
+        print(f"  ⚠️  读取标签文件失败 {label_path}: {e}")
+    
+    return total, class_0_count, class_1_count
+
+
 def check_split(split_name, img_dir, label_dir, verbose=True):
     """
     检查单个 split 的完整性。
@@ -84,6 +116,9 @@ def check_split(split_name, img_dir, label_dir, verbose=True):
         'optical_labels': 0,
         'sar_labels': 0,
         'paired_images': 0,
+        'total_instances': 0,
+        'optical_aircraft_instances': 0,  # 类别0：光学飞机
+        'sar_aircraft_instances': 0,      # 类别1：SAR飞机
         'missing_sar_images': [],
         'missing_optical_images': [],
         'missing_optical_labels': [],
@@ -138,11 +173,17 @@ def check_split(split_name, img_dir, label_dir, verbose=True):
     without_labels = all_imgs - all_labels
     result['images_without_labels'] = sorted(list(without_labels))
 
-    # 4. 检查标签文件内容（可选的详细检查）
+    # 4. 统计实例数量并检查标签内容
     if verbose:
-        # 检查标签文件是否为空或格式错误
-        for label_file in optical_label_list + sar_label_list:
+        # 统计光学标签实例
+        for label_file in optical_label_list:
             label_path = label_dir / label_file
+            total, cls0, cls1 = count_instances_in_label(label_path)
+            result['total_instances'] += total
+            result['optical_aircraft_instances'] += cls0
+            result['sar_aircraft_instances'] += cls1
+            
+            # 检查格式错误
             try:
                 with open(label_path, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
@@ -160,6 +201,51 @@ def check_split(split_name, img_dir, label_dir, verbose=True):
                             try:
                                 cls = int(parts[0])
                                 x, y, w, h = map(float, parts[1:])
+                                if cls not in [0, 1]:
+                                    result['label_content_errors'].append(
+                                        f"{label_file}: 第{i}行类别ID错误 (应为0或1，实际{cls})"
+                                    )
+                                if not (0 <= x <= 1 and 0 <= y <= 1 and 0 <= w <= 1 and 0 <= h <= 1):
+                                    result['label_content_errors'].append(
+                                        f"{label_file}: 第{i}行数值超出 [0,1] 范围"
+                                    )
+                            except ValueError:
+                                result['label_content_errors'].append(
+                                    f"{label_file}: 第{i}行数值解析错误"
+                                )
+            except Exception as e:
+                result['label_content_errors'].append(f"{label_file}: 读取错误 - {str(e)}")
+        
+        # 统计SAR标签实例
+        for label_file in sar_label_list:
+            label_path = label_dir / label_file
+            total, cls0, cls1 = count_instances_in_label(label_path)
+            result['total_instances'] += total
+            result['optical_aircraft_instances'] += cls0
+            result['sar_aircraft_instances'] += cls1
+            
+            # 检查格式错误
+            try:
+                with open(label_path, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                    for i, line in enumerate(lines, 1):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        parts = line.split()
+                        if len(parts) != 5:
+                            result['label_content_errors'].append(
+                                f"{label_file}: 第{i}行格式错误 (期望 5 个值，实际{len(parts)}个)"
+                            )
+                        else:
+                            # 检查数值范围
+                            try:
+                                cls = int(parts[0])
+                                x, y, w, h = map(float, parts[1:])
+                                if cls not in [0, 1]:
+                                    result['label_content_errors'].append(
+                                        f"{label_file}: 第{i}行类别ID错误 (应为0或1，实际{cls})"
+                                    )
                                 if not (0 <= x <= 1 and 0 <= y <= 1 and 0 <= w <= 1 and 0 <= h <= 1):
                                     result['label_content_errors'].append(
                                         f"{label_file}: 第{i}行数值超出 [0,1] 范围"
@@ -177,15 +263,18 @@ def check_split(split_name, img_dir, label_dir, verbose=True):
 def print_report(results, show_details=True):
     """打印检查报告"""
     print("=" * 80)
-    print("📊 M4-SAR 数据集完整性检查报告")
+    print("📊 CORS-SAR 数据集完整性检查报告")
     print("=" * 80)
 
     total_issues = 0
+    grand_total_instances = 0
+    grand_optical_instances = 0
+    grand_sar_instances = 0
 
     for result in results:
         split = result['split']
         print(f"\n{'='*80}")
-        print(f"📁 Split: {split}")
+        print(f"📁 Split: {split.upper()}")
         print(f"{'='*80}")
 
         # 基本统计
@@ -195,6 +284,16 @@ def print_report(results, show_details=True):
         print(f"  光学标签：{result['optical_labels']} 个")
         print(f"  SAR 标签：{result['sar_labels']} 个")
         print(f"  配对图像：{result['paired_images']} 对")
+
+        # 实例统计
+        print(f"\n🎯 实例统计:")
+        print(f"  总实例数：{result['total_instances']} 个")
+        print(f"  光学飞机 (类别0)：{result['optical_aircraft_instances']} 个")
+        print(f"  SAR 飞机 (类别1)：{result['sar_aircraft_instances']} 个")
+        
+        grand_total_instances += result['total_instances']
+        grand_optical_instances += result['optical_aircraft_instances']
+        grand_sar_instances += result['sar_aircraft_instances']
 
         # 问题统计
         issues = []
@@ -248,26 +347,29 @@ def print_report(results, show_details=True):
 
     # 总结
     print(f"\n{'='*80}")
-    print("📋 总结")
+    print("📋 总体总结")
     print(f"{'='*80}")
+    print(f"\n🎯 全数据集实例统计:")
+    print(f"  总实例数：{grand_total_instances} 个")
+    print(f"  光学飞机 (类别0)：{grand_optical_instances} 个")
+    print(f"  SAR 飞机 (类别1)：{grand_sar_instances} 个")
+    
     if total_issues == 0:
-        print("✅ 所有 split 均无问题！数据集完整性良好。")
+        print(f"\n✅ 所有 split 均无问题！CORS-SAR 数据集完整性良好。")
     else:
-        print(f"⚠️  共发现 {total_issues} 个问题项，请检查上述详细信息。")
+        print(f"\n⚠️  共发现 {total_issues} 个问题项，请检查上述详细信息。")
 
     return total_issues
 
 
 def main():
-    parser = argparse.ArgumentParser(description='检查 M4-SAR 数据集完整性')
-    parser.add_argument('--data_root', type=str, default='../datasets/M4-SAR-sampled',
+    parser = argparse.ArgumentParser(description='检查 CORS-SAR 数据集完整性')
+    parser.add_argument('--data_root', type=str, default='../datasets/CORS-SAR',
                         help='数据集根目录')
     parser.add_argument('--splits', type=str, nargs='+', default=['train', 'val', 'test'],
                         help='要检查的 splits')
     parser.add_argument('--quiet', action='store_true',
                         help='静默模式，只显示统计信息，不显示详细文件列表')
-    parser.add_argument('--fix', action='store_true',
-                        help='自动修复：为缺失的 SAR 标签创建软链接')
     args = parser.parse_args()
 
     data_root = Path(args.data_root).resolve()
@@ -292,20 +394,6 @@ def main():
 
         result = check_split(split, img_dir, label_dir, verbose=not args.quiet)
         results.append(result)
-
-        # 如果需要自动修复
-        if args.fix and result['missing_sar_labels']:
-            print(f"\n🔧 正在为 {split} 创建缺失的 SAR 标签软链接...")
-            for base_name in result['missing_sar_labels']:
-                optical_label_path = label_dir / f'optical_{base_name}.txt'
-                sar_label_path = label_dir / f'sar_{base_name}.txt'
-
-                if optical_label_path.exists() and not sar_label_path.exists():
-                    try:
-                        os.symlink(optical_label_path, sar_label_path)
-                        print(f"  ✓ 创建：sar_{base_name}.txt")
-                    except Exception as e:
-                        print(f"  ❌ 失败：sar_{base_name}.txt - {e}")
 
     # 打印报告
     print_report(results, show_details=not args.quiet)

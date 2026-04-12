@@ -429,7 +429,7 @@ class MaxSigmoidAttnBlock(nn.Module):
 
         aw = torch.einsum("bmchw,bnmc->bmhwn", embed, guide)
         aw = aw.max(dim=-1)[0]
-        aw = aw / (self.hc**0.5)
+        aw = aw / (self.hc ** 0.5)
         aw = aw + self.bias[None, :, None, None]
         aw = aw.sigmoid() * self.scale
 
@@ -493,7 +493,7 @@ class ImagePoolingAttn(nn.Module):
         """Executes attention mechanism on input tensor x and guide tensor."""
         bs = x[0].shape[0]
         assert len(x) == self.nf
-        num_patches = self.k**2
+        num_patches = self.k ** 2
         x = [pool(proj(x)).view(bs, -1, num_patches) for (x, proj, pool) in zip(x, self.projections, self.im_pools)]
         x = torch.cat(x, dim=-1).transpose(1, 2)
         q = self.query(text)
@@ -506,7 +506,7 @@ class ImagePoolingAttn(nn.Module):
         v = v.reshape(bs, -1, self.nh, self.hc)
 
         aw = torch.einsum("bnmc,bkmc->bmnk", q, k)
-        aw = aw / (self.hc**0.5)
+        aw = aw / (self.hc ** 0.5)
         aw = F.softmax(aw, dim=-1)
 
         x = torch.einsum("bmnk,bkmc->bnmc", aw, v)
@@ -707,10 +707,10 @@ class RepVGGDW(torch.nn.Module):
         self.conv1 = Conv(ed, ed, 3, 1, 1, g=ed, act=False)
         self.dim = ed
         self.act = nn.SiLU()
-    
+
     def forward(self, x):
         return self.act(self.conv(x) + self.conv1(x))
-    
+
     def forward_fuse(self, x):
         return self.act(self.conv(x))
 
@@ -718,13 +718,13 @@ class RepVGGDW(torch.nn.Module):
     def fuse(self):
         conv = fuse_conv_and_bn(self.conv.conv, self.conv.bn)
         conv1 = fuse_conv_and_bn(self.conv1.conv, self.conv1.bn)
-        
+
         conv_w = conv.weight
         conv_b = conv.bias
         conv1_w = conv1.weight
         conv1_b = conv1.bias
-        
-        conv1_w = torch.nn.functional.pad(conv1_w, [2,2,2,2])
+
+        conv1_w = torch.nn.functional.pad(conv1_w, [2, 2, 2, 2])
 
         final_conv_w = conv_w + conv1_w
         final_conv_b = conv_b + conv1_b
@@ -734,6 +734,7 @@ class RepVGGDW(torch.nn.Module):
 
         self.conv = conv
         del self.conv1
+
 
 class CIB(nn.Module):
     """Standard bottleneck."""
@@ -757,6 +758,7 @@ class CIB(nn.Module):
     def forward(self, x):
         """'forward()' applies the YOLO FPN to input data."""
         return x + self.cv1(x) if self.add else self.cv1(x)
+
 
 class C2fCIB(C2f):
     """Faster Implementation of CSP Bottleneck with 2 convolutions."""
@@ -787,36 +789,39 @@ class Attention(nn.Module):
         B, C, H, W = x.shape
         N = H * W
         qkv = self.qkv(x)
-        q, k, v = qkv.view(B, self.num_heads, self.key_dim*2 + self.head_dim, N).split([self.key_dim, self.key_dim, self.head_dim], dim=2)
+        q, k, v = qkv.view(B, self.num_heads, self.key_dim * 2 + self.head_dim, N).split(
+            [self.key_dim, self.key_dim, self.head_dim], dim=2)
 
         attn = (
-            (q.transpose(-2, -1) @ k) * self.scale
+                (q.transpose(-2, -1) @ k) * self.scale
         )
         attn = attn.softmax(dim=-1)
         x = (v @ attn.transpose(-2, -1)).view(B, C, H, W) + self.pe(v.reshape(B, C, H, W))
         x = self.proj(x)
         return x
 
+
 class PSA(nn.Module):
 
     def __init__(self, c1, c2, e=0.5):
         super().__init__()
-        assert(c1 == c2)
+        assert (c1 == c2)
         self.c = int(c1 * e)
         self.cv1 = Conv(c1, 2 * self.c, 1, 1)
         self.cv2 = Conv(2 * self.c, c1, 1)
-        
+
         self.attn = Attention(self.c, attn_ratio=0.5, num_heads=self.c // 64)
         self.ffn = nn.Sequential(
-            Conv(self.c, self.c*2, 1),
-            Conv(self.c*2, self.c, 1, act=False)
+            Conv(self.c, self.c * 2, 1),
+            Conv(self.c * 2, self.c, 1, act=False)
         )
-        
+
     def forward(self, x):
         a, b = self.cv1(x).split((self.c, self.c), dim=1)
         b = b + self.attn(b)
         b = b + self.ffn(b)
         return self.cv2(torch.cat((a, b), 1))
+
 
 class SCDown(nn.Module):
     def __init__(self, c1, c2, k, s):
@@ -826,126 +831,4 @@ class SCDown(nn.Module):
 
     def forward(self, x):
         return self.cv2(self.cv1(x))
-
-
-class CoordAtt(nn.Module):
-    """
-    Coordinate Attention (CA) mechanism.
-    
-    Paper: "Coordinate Attention for Efficient Mobile Network Design" (CVPR 2021)
-    https://arxiv.org/abs/2103.02907
-    
-    This module embeds position-sensitive information into channel attention,
-    enabling the network to localize and identify objects more accurately.
-    """
-    
-    def __init__(self, c1, reduction=32):
-        """
-        Initialize Coordinate Attention module.
-        
-        Args:
-            c1 (int): Number of input channels.
-            reduction (int): Reduction ratio for channel dimension in attention computation.
-        """
-        super().__init__()
-        
-        # Pooling operations for horizontal and vertical directions
-        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))  # Horizontal pooling: (B, C, H, W) -> (B, C, H, 1)
-        self.pool_w = nn.AdaptiveAvgPool2d((1, None))  # Vertical pooling: (B, C, H, W) -> (B, C, 1, W)
-        
-        # Calculate intermediate channels
-        mid_channels = max(8, c1 // reduction)
-        
-        # Convolution for concatenating horizontal and vertical features
-        self.conv1 = Conv(c1, mid_channels, k=1, act=nn.ReLU(inplace=True))
-        
-        # Separate convolutions for horizontal and vertical attention
-        self.conv_h = nn.Conv2d(mid_channels, c1, kernel_size=1, stride=1, padding=0)
-        self.conv_w = nn.Conv2d(mid_channels, c1, kernel_size=1, stride=1, padding=0)
-        
-        # Activation function
-        self.sigmoid = nn.Sigmoid()
-    
-    def forward(self, x):
-        """
-        Forward pass through Coordinate Attention module.
-        
-        Args:
-            x (Tensor): Input tensor of shape (B, C, H, W).
-            
-        Returns:
-            Tensor: Output tensor with coordinate attention applied.
-        """
-        identity = x
-        
-        n, c, h, w = x.size()
-        
-        # Apply horizontal and vertical pooling
-        x_h = self.pool_h(x)  # (B, C, H, 1)
-        x_w = self.pool_w(x)  # (B, C, 1, W)
-        
-        # Concatenate along spatial dimension
-        # x_cat: (B, C, H, W+1) where last column is from x_w
-        x_cat = torch.cat([x_h.repeat(1, 1, 1, w), x_w.repeat(1, 1, h, 1)], dim=3)
-        
-        # Alternative approach: concatenate height and width info separately
-        # This is the standard implementation from the paper
-        y = torch.cat([self.pool_h(x), self.pool_w(x).transpose(2, 3)], dim=3)
-        
-        # Apply convolution to get mixed features
-        y = self.conv1(y)
-        
-        # Split back to horizontal and vertical components
-        x_h, x_w = torch.split(y, [h, w], dim=3)
-        
-        # Apply separate convolutions
-        x_h = self.conv_h(x_h)  # (B, C, H, 1)
-        x_w = self.conv_w(x_w).transpose(2, 3)  # (B, C, H, 1) -> (B, C, 1, W)
-        
-        # Apply sigmoid activation
-        a_h = self.sigmoid(x_h)
-        a_w = self.sigmoid(x_w)
-        
-        # Apply attention weights to original feature
-        # Expand weights to match input dimensions
-        out = identity * a_h * a_w
-        
-        return out
-
-
-class C2fCA(C2f):
-    """
-    C2f module with Coordinate Attention (CA).
-    
-    This module integrates Coordinate Attention into the C2f bottleneck structure,
-    enhancing spatial awareness and feature representation for object detection.
-    
-    Args:
-        c1 (int): Number of input channels.
-        c2 (int): Number of output channels.
-        n (int): Number of Bottleneck layers.
-        shortcut (bool): Whether to use shortcut connection.
-        g (int): Number of groups for grouped convolution.
-        e (float): Expansion ratio for hidden channels.
-        reduction (int): Reduction ratio for Coordinate Attention.
-    """
-    
-    def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5, reduction=32):
-        """Initialize C2fCA with Coordinate Attention."""
-        super().__init__(c1, c2, n, shortcut, g, e)
-        
-        # Add Coordinate Attention after the main C2f block
-        mid_channels = int(c2 * e) + (n + 1) * mid_channels if hasattr(self, 'c') else c2
-        self.ca = CoordAtt(c2, reduction=reduction)
-    
-    def forward(self, x):
-        """Forward pass through C2fCA layer."""
-        # First apply C2f operations
-        y = list(self.cv1(x).chunk(2, 1))
-        y.extend(m(y[-1]) for m in self.m)
-        x_out = self.cv2(torch.cat(y, 1))
-        
-        # Then apply Coordinate Attention
-        return self.ca(x_out)
-
 
