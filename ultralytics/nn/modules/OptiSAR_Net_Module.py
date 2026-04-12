@@ -74,7 +74,11 @@ class DualAdaptiveAttention(nn.Module):
 
         # Depth-wise convolutions for local and global feature extraction
         self.local_conv = Conv(dim, dim, k=3, p=1, g=dim)
-        self.global_conv = Conv(dim, dim, k=3, p=3, g=dim, d=3)
+        # 原代码
+        # self.global_conv = Conv(dim, dim, k=3, p=3, g=dim, d=3)
+
+        # 修改后：d=5，增强对飞机长距离几何结构（如机身轴线）的感知
+        self.global_conv = Conv(dim, dim, k=3, p=5, g=dim, d=5)
 
         # Channel reduction for attention computation
         self.channel_reducer_local = Conv(dim, dim // 2, k=1)
@@ -256,7 +260,7 @@ class BiLevelRoutingDeformableAttention(nn.Module):
 
     def __init__(self, dim, num_windows=11, num_heads=4, qk_dim=None, qk_scale=None,
                  kv_per_window=4, kv_downsample_mode='ada_maxpool', topk=4,
-                 side_conv=3, use_deformable=True, off_conv=7
+                 side_conv=3, use_deformable=True, off_conv=9
                 ):
         """
         Initialize the Bi-Level Routing Deformable Attention.
@@ -372,8 +376,10 @@ class BiLevelRoutingDeformableAttention(nn.Module):
         batch_size, _, _, _ = offset.size()
         reference = self._get_reference_points(height_key, width_key, batch_size, dtype, device)
 
-        pos = (offset + reference).clamp(-0.05, +0.05)
-
+        # 原代码：约束极其严格，只允许 5% 的偏移，适合海面小目标船舶
+        # pos = (offset + reference).clamp(-0.05, +0.05)
+        # 修改后：允许 20% 的偏移量，使采样点能跳出局部，覆盖到延展的机翼和机身
+        pos = (offset + reference).clamp(-0.20, +0.20)
         # Apply deformable sampling
         if self.use_deformable:
             x_sampled = F.grid_sample(
@@ -441,6 +447,13 @@ class BSPPF(nn.Module):
         c_ = c1 // 2  # hidden channels
         self.cv1 = Conv(c1, c_, 1, 1)
         self.cv2 = Conv(c_ * 4, c2, 1, 1)
+        # 原代码
+        # self.m = nn.MaxPool2d(kernel_size=k, stride=1, padding=k // 2)
+
+        # 兼容 YAML 传入的列表参数，取第一个值 5 作为基础 kernel
+        if isinstance(k, list):
+            k = k[0]
+
         self.m = nn.MaxPool2d(kernel_size=k, stride=1, padding=k // 2)
         self.brda = BiLevelRoutingDeformableAttention(c_)
 
@@ -450,9 +463,20 @@ class BSPPF(nn.Module):
         # Apply Bi-Level Routing Deformable Attention with residual connection
         x = x + self.brda(x)
 
-        y1 = self.m(x)
-        y2 = self.m(y1)
-        return self.cv2(torch.cat((x, y1, y2, self.m(y2)), 1))
+        # 原代码
+        # y1 = self.m(x)
+        # y2 = self.m(y1)
+        # return self.cv2(torch.cat((x, y1, y2, self.m(y2)), 1))
+
+
+        # 修改：手动指定不同的池化核大小，模拟 SPP 的 (5, 9, 13) 效果
+        # 模拟 SPP 结构，逐级扩大感受野
+        y1 = self.m(x)  # Kernel 5
+        y2 = F.max_pool2d(y1, kernel_size=5, stride=1, padding=2)  # 累积感受野 9
+        y3 = F.max_pool2d(y2, kernel_size=5, stride=1, padding=2)  # 累积感受野 13
+
+        # 拼接原始特征与三层池化特征，总通道数为 c_ * 4
+        return self.cv2(torch.cat((x, y1, y2, y3), 1))
 
 
 class SpatialShuffleAttention(nn.Module):
@@ -588,7 +612,7 @@ class VSSA(nn.Module):
     VoVGSCSP module with Spatial Shuffle Attention (VSSA).
     """
 
-    def __init__(self, in_channels, out_channels, num_gsb=4, expansion_factor=0.5, dropout_rate=0.05):
+    def __init__(self, in_channels, out_channels, num_gsb=4, expansion_factor=0.5, dropout_rate=0.01):
         """
         Initialize the VSSA module.
 
