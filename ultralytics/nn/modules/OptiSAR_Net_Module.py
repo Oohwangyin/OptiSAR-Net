@@ -11,7 +11,10 @@ from .conv import Conv, autopad
 __all__ = (
     "DAAM",
     "BSPPF",
-    "VSSA"
+    "VSSA",
+    "CAAM",
+    "LKA_SPPF",
+    "VCAA"
 )
 
 class EnhancedConvolutionalBlock(nn.Module):
@@ -73,12 +76,12 @@ class DualAdaptiveAttention(nn.Module):
         self.output_proj = Conv(dim, dim, k=1)
 
         # Depth-wise convolutions for local and global feature extraction
-        self.local_conv = Conv(dim, dim, k=3, p=1, g=dim)
+        self.local_conv = Conv(dim, dim, k=3, p=2, g=dim, d=2)
         # 原代码
         # self.global_conv = Conv(dim, dim, k=3, p=3, g=dim, d=3)
 
         # 修改后：d=5，增强对飞机长距离几何结构（如机身轴线）的感知
-        self.global_conv = Conv(dim, dim, k=3, p=5, g=dim, d=5)
+        self.global_conv = Conv(dim, dim, k=3, p=4, g=dim, d=4)
 
         # Channel reduction for attention computation
         self.channel_reducer_local = Conv(dim, dim // 2, k=1)
@@ -379,7 +382,7 @@ class BiLevelRoutingDeformableAttention(nn.Module):
         # 原代码：约束极其严格，只允许 5% 的偏移，适合海面小目标船舶
         # pos = (offset + reference).clamp(-0.05, +0.05)
         # 修改后：允许 20% 的偏移量，使采样点能跳出局部，覆盖到延展的机翼和机身
-        pos = (offset + reference).clamp(-0.20, +0.20)
+        pos = (offset + reference).clamp(-0.12, +0.12)
         # Apply deformable sampling
         if self.use_deformable:
             x_sampled = F.grid_sample(
@@ -458,34 +461,20 @@ class BSPPF(nn.Module):
         self.brda = BiLevelRoutingDeformableAttention(c_)
 
         # [新增]：引入动态尺度加权模块，输入通道数是拼接后的 c_ * 4
-        self.scale_weighting = DynamicScaleWeighting(c_ * 4)
+        # self.scale_weighting = DynamicScaleWeighting(c_ * 4)
 
     def forward(self, x):
         x = self.cv1(x)
-
-        # Apply Bi-Level Routing Deformable Attention with residual connection
         x = x + self.brda(x)
 
-        # 原代码
-        # y1 = self.m(x)
-        # y2 = self.m(y1)
-        # return self.cv2(torch.cat((x, y1, y2, self.m(y2)), 1))
+        # 混合池化策略：前两层用 Max 抓取边缘与局部散射点，最后一层用 Avg 抑制宏观噪声
+        y1 = F.max_pool2d(x, kernel_size=5, stride=1, padding=2)
+        y2 = F.max_pool2d(y1, kernel_size=5, stride=1, padding=2)
 
+        # 【关键修改】宏观分支使用平均池化，防止 SAR 背景强噪点被传递
+        y3 = F.avg_pool2d(y2, kernel_size=5, stride=1, padding=2)
 
-        # 修改：手动指定不同的池化核大小，模拟 SPP 的 (5, 9, 13) 效果
-        # 模拟 SPP 结构，逐级扩大感受野
-        y1 = self.m(x)  # Kernel 5
-        y2 = F.max_pool2d(y1, kernel_size=5, stride=1, padding=2)  # 累积感受野 9
-        y3 = F.max_pool2d(y2, kernel_size=5, stride=1, padding=2)  # 累积感受野 13
-
-        # 拼接原始特征与三层池化特征 (总通道数: c_ * 4)
-        cat_features = torch.cat((x, y1, y2, y3), 1)
-
-        # [核心改动]：让网络自适应判断这 4 个分支哪些是有用的（对光学重用大核，对 SAR 抑制大核）
-        weighted_features = self.scale_weighting(cat_features)
-
-        # 降维输出
-        return self.cv2(weighted_features)
+        return self.cv2(torch.cat((x, y1, y2, y3), 1))
 
 
 class SpatialShuffleAttention(nn.Module):
@@ -503,7 +492,8 @@ class SpatialShuffleAttention(nn.Module):
             dropout_rate (float): Dropout rate for regularization. Default is 0.1.
         """
         super().__init__()
-        self.groups = groups
+        # self.groups = groups
+        self.groups = max(2, groups // 2)
         self.dim = dim
 
         # Pooling layers
@@ -511,10 +501,10 @@ class SpatialShuffleAttention(nn.Module):
         self.max_pool = nn.AdaptiveMaxPool2d(1)
 
         # Learnable parameters for spatial attention
-        self.weight_max = Parameter(torch.zeros(1, dim // (2 * groups), 1, 1))
-        self.bias_max = Parameter(torch.ones(1, dim // (2 * groups), 1, 1))
-        self.weight_avg = Parameter(torch.zeros(1, dim // (2 * groups), 1, 1))
-        self.bias_avg = Parameter(torch.ones(1, dim // (2 * groups), 1, 1))
+        self.weight_max = Parameter(torch.zeros(1, dim // (2 * self.groups), 1, 1))
+        self.bias_max = Parameter(torch.ones(1, dim // (2 * self.groups), 1, 1))
+        self.weight_avg = Parameter(torch.zeros(1, dim // (2 * self.groups), 1, 1))
+        self.bias_avg = Parameter(torch.ones(1, dim // (2 * self.groups), 1, 1))
 
         self.sigmoid = nn.Sigmoid()
         self.dropout = nn.Dropout(dropout_rate)
@@ -662,25 +652,141 @@ class VSSA(nn.Module):
 
         return output
 
-class DynamicScaleWeighting(nn.Module):
-    """
-    轻量级通道注意力模块，用于自适应调整 BSPPF 中不同池化分支的权重。
-    解决跨模态（光学 vs SAR）大/小感受野的冲突。
-    """
-    def __init__(self, channels, reduction=4):
+class CrossAxialAttention(nn.Module):
+    def __init__(self, dim):
         super().__init__()
-        # 全局平均池化，提取每个通道的全局上下文信息
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        # 降维->激活->升维->Sigmoid，生成 0~1 的权重
-        self.fc = nn.Sequential(
-            nn.Linear(channels, channels // reduction, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Linear(channels // reduction, channels, bias=False),
-            nn.Sigmoid()
-        )
+        # 使用非对称卷积捕捉水平（机翼）和垂直（机身）特征
+        self.conv_1x7 = Conv(dim, dim, k=(1, 7), p=(0, 3), g=dim)
+        self.conv_7x1 = Conv(dim, dim, k=(7, 1), p=(3, 0), g=dim)
+        self.conv_proj = Conv(dim, dim, k=1)
+        self.act = nn.Sigmoid()
 
     def forward(self, x):
-        b, c, _, _ = x.size()
-        y = self.avg_pool(x).view(b, c)
-        y = self.fc(y).view(b, c, 1, 1)
-        return x * y.expand_as(x)
+        u = x.clone()
+        # 十字形特征聚合
+        attn = self.conv_1x7(x) + self.conv_7x1(x)
+        attn = self.conv_proj(attn)
+        return u * self.act(attn)
+
+class CAAM(nn.Module):
+    """
+    专门针对飞机十字形拓扑结构的交叉轴向自适应模块
+    替代原有的 DAAM
+    """
+    def __init__(self, c1, c2):
+        super().__init__()
+        dim = c1  # 保证内部维度一致
+        self.norm = nn.BatchNorm2d(dim)
+        self.caa = CrossAxialAttention(dim)
+        self.ecb = EnhancedConvolutionalBlock(dim, dim)
+
+    def forward(self, x):
+        # 交叉轴向注意力注入
+        x = x + self.caa(self.norm(x))
+        # 特征增强
+        x = x + self.ecb(x)
+        return x
+
+
+class LargeKernelAttention(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        # 局部结构提取 (相当于机身)
+        self.conv0 = nn.Conv2d(dim, dim, 5, padding=2, groups=dim)
+        # 极大感受野上下文 (dilation=3的7x7卷积，覆盖极广，用于包裹整架大飞机和离散SAR散斑)
+        self.conv_spatial = nn.Conv2d(dim, dim, 7, stride=1, padding=9, groups=dim, dilation=3)
+        self.conv1 = nn.Conv2d(dim, dim, 1)
+
+    def forward(self, x):
+        u = x.clone()
+        attn = self.conv0(x)
+        attn = self.conv_spatial(attn)
+        attn = self.conv1(attn)
+        return u * attn
+
+
+class LKA_SPPF(nn.Module):
+    """
+    大核注意力池化模块，替代原生船舶 BSPPF 中不稳定的路由机制
+    """
+
+    def __init__(self, c1, c2, k=5):
+        super().__init__()
+        c_ = c1 // 2
+        self.cv1 = Conv(c1, c_, 1, 1)
+        self.cv2 = Conv(c_ * 4, c2, 1, 1)
+
+        self.m = nn.MaxPool2d(kernel_size=k, stride=1, padding=k // 2)
+        # 引入极其稳定的 LKA 替代 BiLevelRouting
+        self.lka = LargeKernelAttention(c_)
+
+    def forward(self, x):
+        x = self.cv1(x)
+        # LKA 重连离散特征
+        x = x + self.lka(x)
+
+        # 经典的 SPPF 级联池化，稳定可靠
+        y1 = self.m(x)
+        y2 = self.m(y1)
+        y3 = self.m(y2)
+
+        return self.cv2(torch.cat((x, y1, y2, y3), 1))
+
+
+class CoordinateAttention(nn.Module):
+    def __init__(self, inp, reduction=32):
+        super().__init__()
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
+        mip = max(8, inp // reduction)
+        self.conv1 = nn.Conv2d(inp, mip, kernel_size=1, stride=1, padding=0)
+        self.bn1 = nn.BatchNorm2d(mip)
+        self.act = nn.SiLU()
+        self.conv_h = nn.Conv2d(mip, inp, kernel_size=1, stride=1, padding=0)
+        self.conv_w = nn.Conv2d(mip, inp, kernel_size=1, stride=1, padding=0)
+
+    def forward(self, x):
+        identity = x
+        n, c, h, w = x.size()
+        # 沿机身和机翼(X/Y轴)分别池化
+        x_h = self.pool_h(x)
+        x_w = self.pool_w(x).permute(0, 1, 3, 2)
+        y = torch.cat([x_h, x_w], dim=2)
+        y = self.conv1(y)
+        y = self.bn1(y)
+        y = self.act(y)
+        x_h, x_w = torch.split(y, [h, w], dim=2)
+        x_w = x_w.permute(0, 1, 3, 2)
+        a_h = self.conv_h(x_h).sigmoid()
+        a_w = self.conv_w(x_w).sigmoid()
+        # 滤除斜向的机场建筑噪声
+        out = identity * a_w * a_h
+        return out
+
+
+class VCAA(nn.Module):
+    """
+    坐标注意力增强的 VoV-GSCSP，替代原有通道洗牌的 VSSA
+    """
+
+    def __init__(self, in_channels, out_channels, num_gsb=4, expansion_factor=0.5):
+        super().__init__()
+        hidden_channels = int(out_channels * expansion_factor)
+        self.conv_input_1 = Conv(in_channels, hidden_channels, k=1, s=1)
+        self.conv_input_2 = Conv(in_channels, hidden_channels, k=1, s=1)
+
+        self.gsb_sequence = nn.Sequential(
+            *(GSBottleneck(hidden_channels, hidden_channels, e=1.0) for _ in range(num_gsb))
+        )
+        self.conv_output = Conv(2 * hidden_channels, out_channels, k=1)
+
+        # 引入坐标注意力，完美滤除背景
+        self.coord_attn = CoordinateAttention(in_channels)
+
+    def forward(self, x):
+        attended_features = self.coord_attn(x)
+        gsb_output = self.gsb_sequence(self.conv_input_1(attended_features))
+        direct_path = self.conv_input_2(attended_features)
+        combined_features = torch.cat((direct_path, gsb_output), dim=1)
+        output = self.conv_output(combined_features)
+        return output
