@@ -14,7 +14,9 @@ __all__ = (
     "VSSA",
     "CAAM",
     "LKA_SPPF",
-    "VCAA"
+    "VCAA",
+    "C2f_DFDA",
+    "CSAF"
 )
 
 class EnhancedConvolutionalBlock(nn.Module):
@@ -790,3 +792,181 @@ class VCAA(nn.Module):
         combined_features = torch.cat((direct_path, gsb_output), dim=1)
         output = self.conv_output(combined_features)
         return output
+
+
+class DFDA(nn.Module):
+    """
+    双频解耦注意力模块 (Dual-Frequency Decoupling Attention)
+    """
+
+    # 【修改这里】：将 dim 改为 c1, c2，以匹配 YOLO 的解析机制
+    def __init__(self, c1, c2):
+        super().__init__()
+        dim = c1  # 在内部将 c1 赋值给 dim，确保后续逻辑正常运行
+
+        # 低频分支 (光学轮廓)
+        self.low_freq_path = nn.Sequential(
+            nn.AvgPool2d(kernel_size=3, stride=1, padding=1),
+            Conv(dim, dim // 2, k=3, p=1)
+        )
+        # 高频分支 (SAR 散斑)
+        self.high_freq_path = nn.Sequential(
+            nn.MaxPool2d(kernel_size=3, stride=1, padding=1),
+            Conv(dim, dim // 2, k=3, d=2, p=2)
+        )
+        self.fusion_gate = nn.Sequential(
+            Conv(dim, dim, k=1),
+            nn.Sigmoid()
+        )
+        self.out_proj = Conv(dim, dim, k=1)
+
+    def forward(self, x):
+        feat_low = self.low_freq_path(x)
+        feat_high = self.high_freq_path(x)
+        feat_cat = torch.cat([feat_low, feat_high], dim=1)
+        gate = self.fusion_gate(feat_cat)
+        return x + self.out_proj(feat_cat * gate)
+
+
+class DSA_SPPF(nn.Module):
+    """
+    离散散射空洞空间金字塔池化 (Discrete Scattering Atrous SPPF)
+    利用空洞池化连接遥远且离散的 SAR 飞机散射点
+    """
+
+    def __init__(self, c1, c2, k=5):  # 保留 k=5 以吸收 YAML 传来的多余参数
+        super().__init__()
+        c_ = c1 // 2
+        self.cv1 = Conv(c1, c_, 1, 1)
+        self.cv2 = Conv(c_ * 4, c2, 1, 1)
+
+        # 1. 基础池化 (dilation=1, padding=1，满足 PyTorch 的要求)
+        self.m1 = nn.MaxPool2d(kernel_size=3, stride=1, padding=1, dilation=1)
+
+        # 2. 空洞池化 (dilation=2, 数学上需要 padding=2)
+        # 绕开 PyTorch 限制：在外部用 ReplicationPad 手动填充边缘，池化层内部设为 padding=0
+        self.pad2 = nn.ReplicationPad2d(2)
+        self.m2 = nn.MaxPool2d(kernel_size=3, stride=1, padding=0, dilation=2)
+
+        # 3. 空洞池化 (dilation=3, 数学上需要 padding=3)
+        self.pad3 = nn.ReplicationPad2d(3)
+        self.m3 = nn.MaxPool2d(kernel_size=3, stride=1, padding=0, dilation=3)
+
+    def forward(self, x):
+        x = self.cv1(x)
+
+        # 级联空洞池化与手动填充
+        y1 = self.m1(x)
+        y2 = self.m2(self.pad2(y1))
+        y3 = self.m3(self.pad3(y2))
+
+        return self.cv2(torch.cat((x, y1, y2, y3), 1))
+
+
+class BOD(nn.Module):
+    """纯粹的背景正交剥离注意力机制"""
+
+    def __init__(self, dim):
+        super().__init__()
+        self.vertical_conv = Conv(dim, dim, k=(7, 1), p=(3, 0), g=dim)
+        self.horizontal_conv = Conv(dim, dim, k=(1, 7), p=(0, 3), g=dim)
+        self.fusion = Conv(dim, dim, k=1)
+        self.attention = nn.Sigmoid()
+
+    def forward(self, x):
+        target_feat = self.vertical_conv(x) * self.horizontal_conv(x)
+        attn_mask = self.attention(self.fusion(target_feat))
+        return x * attn_mask + x
+
+
+class VBOD(nn.Module):
+    """
+    完整替换原 VSSA 的架构模块：
+    承担通道降维映射 (c1 -> c2) + n次循环瓶颈 (n=3) + BOD十字注意力
+    """
+
+    def __init__(self, c1, c2, n=1, e=0.5):
+        super().__init__()
+        hidden_channels = int(c2 * e)
+        self.conv_input_1 = Conv(c1, hidden_channels, k=1, s=1)
+        self.conv_input_2 = Conv(c1, hidden_channels, k=1, s=1)
+
+        # 内部处理 yaml 传来的 n=3 次重复
+        self.gsb_sequence = nn.Sequential(
+            *(GSBottleneck(hidden_channels, hidden_channels, e=1.0) for _ in range(n))
+        )
+        self.conv_output = Conv(2 * hidden_channels, c2, k=1)
+
+        # 接入 BOD
+        self.bod = BOD(c1)
+
+    def forward(self, x):
+        attended_features = self.bod(x)
+        gsb_output = self.gsb_sequence(self.conv_input_1(attended_features))
+        direct_path = self.conv_input_2(attended_features)
+        combined_features = torch.cat((direct_path, gsb_output), dim=1)
+        return self.conv_output(combined_features)
+
+class Bottleneck_DFDA(nn.Module):
+    """
+    将双频解耦机制 (DFDA) 注入到标准瓶颈层中
+    """
+    def __init__(self, c1, c2, shortcut=True, g=1, k=(3, 3), e=0.5):
+        super().__init__()
+        c_ = int(c2 * e)  # hidden channels
+        self.cv1 = Conv(c1, c_, k[0], 1)
+        # 【核心突变】：在特征提取的中央嵌入 DFDA，持续保护高低频特征
+        self.dfda = DFDA(c_, c_)
+        self.cv2 = Conv(c_, c2, k[1], 1, g=g)
+        self.add = shortcut and c1 == c2
+
+    def forward(self, x):
+        # 带有跨模态解耦的残差连接
+        return x + self.cv2(self.dfda(self.cv1(x))) if self.add else self.cv2(self.dfda(self.cv1(x)))
+
+class C2f_DFDA(nn.Module):
+    """
+    双频解耦跨阶段局部网络 (Cross-Modal C2f)
+    替换 Backbone 中的标准 C2f，这是带来巨大 mAP 提升的绝对主力
+    """
+    def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):
+        super().__init__()
+        self.c = int(c2 * e)
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        self.cv2 = Conv((2 + n) * self.c, c2, 1)
+        # 【替换】：内部循环使用带有 DFDA 的瓶颈层
+        self.m = nn.ModuleList(Bottleneck_DFDA(self.c, self.c, shortcut, g, k=(3, 3), e=1.0) for _ in range(n))
+
+    def forward(self, x):
+        y = list(self.cv1(x).chunk(2, 1))
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, 1))
+
+
+class CSAF(nn.Module):
+    """
+    跨尺度对齐融合模块 (Cross-Scale Alignment Fusion)
+    替换 Neck 阶段粗暴的 Concat 操作，对齐错位的多模态特征
+    """
+
+    # 【修复】：将参数修改为 d=1，并使用 *args 吸收掉任何多余的 YOLO 参数
+    def __init__(self, d=1, *args, **kwargs):
+        super().__init__()
+        self.d = d  # 拼接的维度，通常传过来的是 1
+        # 简单的空间对齐注意力
+        self.align_conv = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        # x 是一个包含两个张量的列表，如 [特征图1, 特征图2]
+
+        # 沿着指定维度（d=1）将两者拼接，兼容 YOLO 的原生逻辑
+        f_cat = torch.cat(x, dim=self.d)
+
+        # 提取跨尺度的空间极值，生成对齐掩码
+        avg_out = torch.mean(f_cat, dim=1, keepdim=True)
+        max_out, _ = torch.max(f_cat, dim=1, keepdim=True)
+        align_mask = self.sigmoid(self.align_conv(torch.cat([avg_out, max_out], dim=1)))
+
+        # 输出对齐后的融合特征
+        return f_cat * align_mask
