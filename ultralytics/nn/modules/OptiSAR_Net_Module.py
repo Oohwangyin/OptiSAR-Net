@@ -16,7 +16,8 @@ __all__ = (
     "LKA_SPPF",
     "VCAA",
     "C2f_DFDA",
-    "CSAF"
+    "CSAF",
+    "FPM"
 )
 
 class EnhancedConvolutionalBlock(nn.Module):
@@ -970,3 +971,23 @@ class CSAF(nn.Module):
 
         # 输出对齐后的融合特征
         return f_cat * align_mask
+
+class FPM(nn.Module):
+    """
+    超轻量级特征纯化模块 (Feature Purification Module)
+    插入在 Backbone 提取后、Neck 拼接前，用于过滤干扰噪声
+    """
+    def __init__(self, c1, c2=None): # 兼容 YOLO 参数解析
+        super().__init__()
+        c2 = c2 or c1
+        self.channel_att = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(c1, max(8, c1 // 4), 1, bias=False),
+            nn.SiLU(),
+            nn.Conv2d(max(8, c1 // 4), c1, 1, bias=False),
+            nn.Sigmoid()
+        )
+        self.conv = Conv(c1, c2, 1, 1) if c1 != c2 else nn.Identity()
+
+    def forward(self, x):
+        return self.conv(x * self.channel_att(x))

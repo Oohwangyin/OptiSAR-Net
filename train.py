@@ -1,15 +1,10 @@
 from ultralytics import YOLO
 
-# 1. 必须指定为你修改后的 OptiSAR-Net.yaml
-model = YOLO("OptiSAR-Net-Plane.yaml")
+# 1. 极其关键：构建自定义模型后，强制加载官方预训练权重！
+# 系统会自动匹配名字和结构相同的层（即我们的标准 Backbone），忽略不匹配的新层
+model = YOLO("runs/airplane/OptisarNet-Plane/DDSV3.0_4Head/train/weights/last.pt")
 
-# 2. 修改 imgsz 建议为 800，以匹配遥感图像中飞机的多尺度特性
-# 3. 确保 data 指向你包含飞机数据的 yaml 文件
+# 2. 开始训练
 model.train(
-    data="CORS-SAR.yaml", # 确认这个文件包含飞机类别
-    epochs=100,
-    batch=16,             # 增加 Topk 和池化分支后显存占用会增加，如报错请调小 batch
-    imgsz=800,
-    project="runs/airplane/OptisarNet-Plane/DDSV2.0",
-    device=0              # 指定 GPU
+    resume=True                 # 指定单卡 GPU
 )

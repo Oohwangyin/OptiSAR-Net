@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 from ultralytics.nn.modules.OptiSAR_Net_Module import DAAM, BSPPF, VSSA, CAAM, LKA_SPPF, VCAA, DFDA, DSA_SPPF, VBOD, \
-    C2f_DFDA, CSAF
+    C2f_DFDA, CSAF, FPM
 
 from ultralytics.nn.modules import (
     AIFI,
@@ -894,7 +894,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             DFDA,
             DSA_SPPF,
             VBOD,
-            C2f_DFDA
+            C2f_DFDA,
+            FPM
         }:
             c1, c2 = ch[f], args[0]
             if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
