@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-create_cdhd_optical_sar.py
+create_cors_optical_sar.py
 从 CDHD 验证集中提取光学图像（HRSC2016）和 SAR 图像（HRSID）及其标注，
 分别创建软链接到两个新目录，用于单独测试光学或 SAR 部分。
 不复制实际文件，仅创建软链接以节省磁盘空间。

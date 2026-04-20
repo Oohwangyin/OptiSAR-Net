@@ -6,9 +6,6 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-from ultralytics.nn.modules.OptiSAR_Net_Module import DAAM, BSPPF, VSSA, CAAM, LKA_SPPF, VCAA, DFDA, DSA_SPPF, VBOD, \
-    C2f_DFDA, CSAF, FPM
-
 from ultralytics.nn.modules import (
     AIFI,
     C1,
@@ -55,8 +52,12 @@ from ultralytics.nn.modules import (
     PSA,
     SCDown,
     RepVGGDW,
-    v10Detect
+    v10Detect,
+    SPPF_Light,
+    VBOD,
+    FPM,
 )
+from ultralytics.nn.modules.OptiSAR_Net_Module import VSSA, BSPPF, DAAM
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
 from ultralytics.utils.loss import v8ClassificationLoss, v8DetectionLoss, v8OBBLoss, v8PoseLoss, v8SegmentationLoss, v10DetectLoss
@@ -868,6 +869,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             GhostBottleneck,
             SPP,
             SPPF,
+            BSPPF,
             DWConv,
             Focus,
             BottleneckCSP,
@@ -888,14 +890,11 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             PSA,
             SCDown,
             C2fCIB,
-            CAAM,
-            LKA_SPPF,
-            VCAA,
-            DFDA,
-            DSA_SPPF,
+            SPPF_Light,
+            DAAM,
             VBOD,
-            C2f_DFDA,
-            FPM
+            FPM,
+            VSSA,
         }:
             c1, c2 = ch[f], args[0]
             if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
@@ -907,11 +906,9 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 )  # num heads
 
             args = [c1, c2, *args[1:]]
-            if m in (BottleneckCSP, C1, C2, C2f, C2fAttn, C3, C3TR, C3Ghost, C3x, RepC3, C2fCIB, VBOD, C2f_DFDA):
+            if m in (BottleneckCSP, C1, C2, C2f, C2fAttn, C3, C3TR, C3Ghost, C3x, RepC3, C2fCIB, VBOD, VSSA):
                 args.insert(2, n)  # number of repeats
                 n = 1
-        elif m is CSAF:  # CSAF 接在两个输入后面，通道数需要相加
-            c1, c2 = sum(ch[x] for x in f), sum(ch[x] for x in f)
         elif m is AIFI:
             args = [ch[f], *args]
         elif m in {HGStem, HGBlock}:

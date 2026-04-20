@@ -1,0 +1,41 @@
+# 仅使用 DAAM 模块的 YOLOv8 🚀
+
+# Parameters
+nc: 2  # number of classes (请根据您的检测数据集类别数修改)
+scales:
+  # [depth, width, max_channels]
+  n: [0.33, 0.25, 1024]
+
+# Backbone
+backbone:
+  # [from, repeats, module, args]
+  - [-1, 1, Conv, [64, 3, 2]]  # 0-P1/2
+  - [-1, 1, Conv, [128, 3, 2]]  # 1-P2/4
+  - [-1, 3, C2f, [128, True]]
+  - [-1, 1, Conv, [256, 3, 2]]  # 3-P3/8
+  - [-1, 6, C2f, [256, True]]
+  - [-1, 1, Conv, [512, 3, 2]]  # 5-P4/16
+  - [-1, 6, C2f, [512, True]]
+  - [-1, 1, Conv, [1024, 3, 2]] # 7-P5/32
+  - [-1, 3, DAAM, [1024]]       # 8: 【保留创新点】将原版 C2f 替换为您需要的 DAAM
+  - [-1, 1, SPPF, [1024, 5]]    # 9: 【恢复为 SPPF】原本这里是 BSPPF，现在不用了，恢复官方 SPPF
+
+# Head (标准 YOLOv8 P3-P5 结构)
+head:
+  - [-1, 1, nn.Upsample, [None, 2, 'nearest']]
+  - [[-1, 6], 1, Concat, [1]]  # cat backbone P4
+  - [-1, 3, C2f, [512]]        # 12: 【恢复为 C2f】不用 VSSA
+
+  - [-1, 1, nn.Upsample, [None, 2, 'nearest']]
+  - [[-1, 4], 1, Concat, [1]]  # cat backbone P3
+  - [-1, 3, C2f, [256]]        # 15 (P3/8-small): 【恢复为 C2f】不用 VSSA
+
+  - [-1, 1, Conv, [256, 3, 2]]
+  - [[-1, 12], 1, Concat, [1]] # cat head P4
+  - [-1, 3, C2f, [512]]        # 18 (P4/16-medium): 【恢复为 C2f】不用 VSSA
+
+  - [-1, 1, Conv, [512, 3, 2]]
+  - [[-1, 9], 1, Concat, [1]]  # cat head P5
+  - [-1, 3, C2f, [1024]]       # 21 (P5/32-large): 【恢复为 C2f】不用 VSSA
+
+  - [[15, 18, 21], 1, Detect, [nc]]  # Detect(P3, P4, P5)

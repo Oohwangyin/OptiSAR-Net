@@ -51,6 +51,9 @@ from .block import (
     C2fCIB,
     SCDown,
     RepVGGDW,
+    SPPF_Light,
+    FPM,
+    VBOD,
 
 )
 from .conv import (
@@ -146,4 +149,7 @@ __all__ = (
     "SCDown",
     "RepVGGDW",
     "v10Detect",
+    "SPPF_Light",
+    "FPM",
+    "VBOD"
 )
