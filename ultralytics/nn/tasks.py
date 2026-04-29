@@ -27,14 +27,20 @@ from ultralytics.nn.modules import (
     Conv,
     Conv2,
     ConvTranspose,
+    Down,
     Detect,
     DWConv,
     DWConvTranspose2d,
+    FCM,
+    FCM_1,
+    FCM_2,
+    FCM_3,
     Focus,
     GhostBottleneck,
     GhostConv,
     HGBlock,
     HGStem,
+    Pzconv,
     Pose,
     RepC3,
     RepConv,
@@ -53,11 +59,9 @@ from ultralytics.nn.modules import (
     SCDown,
     RepVGGDW,
     v10Detect,
-    SPPF_Light,
-    VBOD,
-    FPM,
+    SchemeOneDetect,
 )
-from ultralytics.nn.modules.OptiSAR_Net_Module import VSSA, BSPPF, DAAM
+from ultralytics.nn.modules.OptiSAR_Net_Module import DAAM
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
 from ultralytics.utils.loss import v8ClassificationLoss, v8DetectionLoss, v8OBBLoss, v8PoseLoss, v8SegmentationLoss, v10DetectLoss
@@ -869,7 +873,6 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             GhostBottleneck,
             SPP,
             SPPF,
-            BSPPF,
             DWConv,
             Focus,
             BottleneckCSP,
@@ -890,11 +893,13 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             PSA,
             SCDown,
             C2fCIB,
-            SPPF_Light,
+            FCM,
+            FCM_1,
+            FCM_2,
+            FCM_3,
+            Pzconv,
+            Down,
             DAAM,
-            VBOD,
-            FPM,
-            VSSA,
         }:
             c1, c2 = ch[f], args[0]
             if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
@@ -906,7 +911,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 )  # num heads
 
             args = [c1, c2, *args[1:]]
-            if m in (BottleneckCSP, C1, C2, C2f, C2fAttn, C3, C3TR, C3Ghost, C3x, RepC3, C2fCIB, VBOD, VSSA):
+            if m in (BottleneckCSP, C1, C2, C2f, C2fAttn, C3, C3TR, C3Ghost, C3x, RepC3, C2fCIB):
                 args.insert(2, n)  # number of repeats
                 n = 1
         elif m is AIFI:
@@ -924,7 +929,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
 
-        elif m in {Detect, WorldDetect, Segment, Pose, OBB, ImagePoolingAttn, v10Detect}:
+        elif m in {Detect, WorldDetect, Segment, Pose, OBB, ImagePoolingAttn, v10Detect, SchemeOneDetect}:
             args.append([ch[x] for x in f])
             if m is Segment:
                 args[2] = make_divisible(min(args[2], max_channels) * width, 8)
@@ -1013,7 +1018,7 @@ def guess_model_task(model):
         m = cfg["head"][-1][-2].lower()  # output module name
         if m in {"classify", "classifier", "cls", "fc"}:
             return "classify"
-        if m == "detect" or m == "v10detect":
+        if m in {"detect", "v10detect", "schemeonedetect", "crossscaleguideddetect"}:
             return "detect"
         if m == "segment":
             return "segment"

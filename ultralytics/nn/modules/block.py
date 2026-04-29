@@ -1,10 +1,11 @@
 # Ultralytics YOLO 🚀, AGPL-3.0 license
 """Block modules."""
-
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad
+import torchvision
+from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad, EMA
 from .transformer import TransformerBlock
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 from torch.nn.parameter import Parameter
@@ -38,116 +39,8 @@ __all__ = (
     "SPPELAN",
     "CBFuse",
     "CBLinear",
-    "Silence",
-    "SPPF_Light",
-    "FPM",
-    "VBOD",
+    "Silence"
 )
-
-
-class SPPF_Light(nn.Module):
-    def __init__(self, c1, c2, k=5):
-        super().__init__()
-        c_ = c1 // 2
-        self.cv1 = Conv(c1, c_, 1, 1)
-        self.cv2 = Conv(c_*4, c2, 1, 1)
-        self.m = nn.MaxPool2d(kernel_size=k, stride=1, padding=k//2)
-    def forward(self, x):
-        x = self.cv1(x)
-        y1 = self.m(x)
-        y2 = self.m(y1)
-        y3 = self.m(y2)
-        return self.cv2(torch.cat([x, y1, y2, y3], 1))
-
-class DFDA(nn.Module):
-    """
-    双频解耦注意力模块 (Dual-Frequency Decoupling Attention)
-    """
-
-    # 【修改这里】：将 dim 改为 c1, c2，以匹配 YOLO 的解析机制
-    def __init__(self, c1, c2):
-        super().__init__()
-        dim = c1  # 在内部将 c1 赋值给 dim，确保后续逻辑正常运行
-
-        # 低频分支 (光学轮廓)
-        self.low_freq_path = nn.Sequential(
-            nn.AvgPool2d(kernel_size=3, stride=1, padding=1),
-            Conv(dim, dim // 2, k=3, p=1)
-        )
-        # 高频分支 (SAR 散斑)
-        self.high_freq_path = nn.Sequential(
-            nn.MaxPool2d(kernel_size=3, stride=1, padding=1),
-            Conv(dim, dim // 2, k=3, d=2, p=2)
-        )
-        self.fusion_gate = nn.Sequential(
-            Conv(dim, dim, k=1),
-            nn.Sigmoid()
-        )
-        self.out_proj = Conv(dim, dim, k=1)
-
-    def forward(self, x):
-        feat_low = self.low_freq_path(x)
-        feat_high = self.high_freq_path(x)
-        feat_cat = torch.cat([feat_low, feat_high], dim=1)
-        gate = self.fusion_gate(feat_cat)
-        return x + self.out_proj(feat_cat * gate)
-
-class IRB(nn.Module):
-    """轻量倒残差块，替代GSBottleneck"""
-    def __init__(self, c, e=1.0):
-        super().__init__()
-        c_ = int(c * e)
-        self.conv1 = Conv(c, c_, 1, 1)
-        self.dwconv = Conv(c_, c_, 3, 1, g=c_, act=True)  # depthwise
-        self.conv2 = Conv(c_, c, 1, 1, act=False)
-    def forward(self, x):
-        return x + self.conv2(self.dwconv(self.conv1(x)))
-
-class VBOD(nn.Module):
-    def __init__(self, c1, c2, n=2, e=0.5):
-        super().__init__()
-        hidden = int(c2 * e)
-        self.conv_in1 = Conv(c1, hidden, 1)
-        self.conv_in2 = Conv(c1, hidden, 1)
-        self.irbs = nn.Sequential(*[IRB(hidden) for _ in range(n)])
-        self.conv_out = Conv(2*hidden, c2, 1)
-        # 修复：使用无 BN 的通道注意力，避免小特征图 BN 报错
-        self.se = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(c1, max(8, c1 // 16), 1, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(max(8, c1 // 16), c1, 1, bias=False),
-            nn.Sigmoid()
-        )
-    def forward(self, x):
-        att = self.se(x)          # 通道注意力权重
-        x = x * att               # 应用注意力
-        x1 = self.conv_in1(x)
-        x2 = self.conv_in2(x)
-        x1 = self.irbs(x1)
-        return self.conv_out(torch.cat([x1, x2], 1))
-
-class FPM(nn.Module):
-    """
-    超轻量级特征纯化模块 (Feature Purification Module)
-    插入在 Backbone 提取后、Neck 拼接前，用于过滤干扰噪声
-    """
-    def __init__(self, c1, c2=None): # 兼容 YOLO 参数解析
-        super().__init__()
-        c2 = c2 or c1
-        self.channel_att = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(c1, max(8, c1 // 4), 1, bias=False),
-            nn.SiLU(),
-            nn.Conv2d(max(8, c1 // 4), c1, 1, bias=False),
-            nn.Sigmoid()
-        )
-        self.conv = Conv(c1, c2, 1, 1) if c1 != c2 else nn.Identity()
-
-    def forward(self, x):
-        return self.conv(x * self.channel_att(x))
-
-
 
 class DFL(nn.Module):
     """

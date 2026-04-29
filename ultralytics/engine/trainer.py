@@ -429,6 +429,8 @@ class BaseTrainer:
                     or final_epoch or self.stopper.possible_stop or self.stop:
                     self.metrics, self.fitness = self.validate()
                 self.save_metrics(metrics={**self.label_loss_items(self.tloss), **self.metrics, **self.lr})
+                if self.args.plots and ((epoch + 1) % 10 == 0):
+                    self.plot_metrics()
                 self.stop |= self.stopper(epoch + 1, self.fitness) or final_epoch
                 if self.args.time:
                     self.stop |= (time.time() - self.train_time_start) > (self.args.time * 3600)

@@ -8,6 +8,7 @@ import torch.nn as nn
 from torch.nn.init import constant_, xavier_uniform_
 
 from ultralytics.utils.tal import TORCH_1_10, dist2bbox, dist2rbox, make_anchors
+from .OptiSAR_Net_Module import DAAMChannelAttention
 from .block import DFL, Proto, ContrastiveHead, BNContrastiveHead
 from .conv import Conv
 from .transformer import MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer
@@ -15,7 +16,7 @@ from .utils import bias_init_with_prob, linear_init
 import copy
 from ultralytics.utils import ops
 
-__all__ = "Detect", "Segment", "Pose", "Classify", "OBB", "RTDETRDecoder"
+__all__ = "Detect", "Segment", "Pose", "Classify", "OBB", "RTDETRDecoder", "SchemeOneDetect"
 
 
 class Detect(nn.Module):
@@ -99,6 +100,35 @@ class Detect(nn.Module):
         if self.export:
             return dist2bbox(bboxes, anchors, xywh=False, dim=1)
         return dist2bbox(bboxes, anchors, xywh=True, dim=1)
+
+
+class SchemeOneDetect(Detect):
+    """DAAM-guided task-decoupled detection head."""
+
+    def __init__(self, nc=80, ch=()):
+        # The last input is the DAAM guide; the others are normal P3/P4/P5 detection features.
+        self.det_channels = ch[:-1]
+        self.daam_channel = ch[-1]
+        super().__init__(nc, self.det_channels)
+        self.cls_channel_attn = nn.ModuleList(
+            DAAMChannelAttention(self.daam_channel, c) for c in self.det_channels
+        )
+
+    def forward(self, x):
+        det_feats = x[:-1]
+        daam_feat = x[-1]
+        y = []
+        for i in range(self.nl):
+            feat = det_feats[i]
+            reg_out = self.cv2[i](feat)
+            cls_feat = self.cls_channel_attn[i](daam_feat, feat)
+            cls_out = self.cv3[i](cls_feat)
+            y.append(torch.cat((reg_out, cls_out), 1))
+
+        if self.training:
+            return y
+
+        return self.inference(y)
 
 
 class Segment(Detect):

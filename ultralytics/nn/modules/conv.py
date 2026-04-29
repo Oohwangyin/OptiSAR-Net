@@ -21,7 +21,44 @@ __all__ = (
     "CBAM",
     "Concat",
     "RepConv",
+    "EMA",
+    "FCM",
+    "FCM_1",
+    "FCM_2",
+    "FCM_3",
+    "Pzconv",
+    "Down",
 )
+
+
+class EMA(nn.Module):
+    def __init__(self, channels, factor=8):
+        super(EMA, self).__init__()
+        self.groups = factor
+        assert channels // self.groups > 0
+        self.softmax = nn.Softmax(-1)
+        self.agp = nn.AdaptiveAvgPool2d((1, 1))
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
+        self.gn = nn.GroupNorm(channels // self.groups, channels // self.groups)
+        self.conv1x1 = nn.Conv2d(channels // self.groups, channels // self.groups, kernel_size=1, stride=1, padding=0)
+        self.conv3x3 = nn.Conv2d(channels // self.groups, channels // self.groups, kernel_size=3, stride=1, padding=1)
+
+    def forward(self, x):
+        b, c, h, w = x.size()
+        group_x = x.reshape(b * self.groups, -1, h, w)  # b*g, c//g, h, w
+        x_h = self.pool_h(group_x)
+        x_w = self.pool_w(group_x).permute(0, 1, 3, 2)
+        hw = self.conv1x1(torch.cat([x_h, x_w], dim=2))
+        x_h, x_w = torch.split(hw, [h, w], dim=2)
+        x1 = self.gn(group_x * x_h.sigmoid() * x_w.permute(0, 1, 3, 2).sigmoid())
+        x2 = self.conv3x3(group_x)
+        x11 = self.softmax(self.agp(x1).reshape(b * self.groups, -1, 1).permute(0, 2, 1))
+        x12 = x2.reshape(b * self.groups, c // self.groups, -1)  # b*g, c//g, hw
+        x21 = self.softmax(self.agp(x2).reshape(b * self.groups, -1, 1).permute(0, 2, 1))
+        x22 = x1.reshape(b * self.groups, c // self.groups, -1)  # b*g, c//g, hw
+        weights = (torch.matmul(x11, x12) + torch.matmul(x21, x22)).reshape(b * self.groups, 1, h, w)
+        return (group_x * weights.sigmoid()).reshape(b, c, h, w)
 
 
 def autopad(k, p=None, d=1):  # kernel, padding, dilation
@@ -331,3 +368,149 @@ class Concat(nn.Module):
     def forward(self, x):
         """Forward pass for the YOLOv8 mask Proto module."""
         return torch.cat(x, self.d)
+
+
+class Channel(nn.Module):
+    """Channel gate used by the original FBRT-YOLO FCM blocks."""
+
+    def __init__(self, dim):
+        super().__init__()
+        self.dwconv = nn.Conv2d(dim, dim, 3, 1, 1, groups=dim)
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        return self.sigmoid(self.pool(self.dwconv(x)))
+
+
+class Spatial(nn.Module):
+    """Spatial gate used by the original FBRT-YOLO FCM blocks."""
+
+    def __init__(self, dim):
+        super().__init__()
+        self.conv = nn.Conv2d(dim, 1, 1, 1)
+        self.bn = nn.BatchNorm2d(1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        return self.sigmoid(self.bn(self.conv(x)))
+
+
+class FCM_3(nn.Module):
+    """Original FBRT-YOLO FCM_3 block."""
+
+    def __init__(self, c1, c2):
+        super().__init__()
+        self.one = c1 - c1 // 4
+        self.two = c1 // 4
+        self.conv1 = Conv(self.one, self.one, 3, 1, 1)
+        self.conv12 = Conv(self.one, self.one, 3, 1, 1)
+        self.conv123 = Conv(self.one, c2, 1, 1)
+        self.conv2 = Conv(self.two, c2, 1, 1)
+        self.spatial = Spatial(c2)
+        self.channel = Channel(c2)
+
+    def forward(self, x):
+        x1, x2 = torch.split(x, [self.one, self.two], dim=1)
+        x3 = self.conv123(self.conv12(self.conv1(x1)))
+        x4 = self.conv2(x2)
+        return self.spatial(x4) * x3 + self.channel(x3) * x4
+
+
+class FCM_2(nn.Module):
+    """Original FBRT-YOLO FCM_2 block."""
+
+    def __init__(self, c1, c2):
+        super().__init__()
+        self.one = c1 - c1 // 4
+        self.two = c1 // 4
+        self.conv1 = Conv(self.one, self.one, 3, 1, 1)
+        self.conv12 = Conv(self.one, self.one, 3, 1, 1)
+        self.conv123 = Conv(self.one, c2, 1, 1)
+        self.conv2 = Conv(self.two, c2, 1, 1)
+        self.spatial = Spatial(c2)
+        self.channel = Channel(c2)
+
+    def forward(self, x):
+        x1, x2 = torch.split(x, [self.one, self.two], dim=1)
+        x3 = self.conv123(self.conv12(self.conv1(x1)))
+        x4 = self.conv2(x2)
+        return self.spatial(x4) * x3 + self.channel(x3) * x4
+
+
+class FCM_1(nn.Module):
+    """Original FBRT-YOLO FCM_1 block."""
+
+    def __init__(self, c1, c2):
+        super().__init__()
+        self.one = c1 // 4
+        self.two = c1 - c1 // 4
+        self.conv1 = Conv(self.one, self.one, 3, 1, 1)
+        self.conv12 = Conv(self.one, self.one, 3, 1, 1)
+        self.conv123 = Conv(self.one, c2, 1, 1)
+        self.conv2 = Conv(self.two, c2, 1, 1)
+        self.spatial = Spatial(c2)
+        self.channel = Channel(c2)
+
+    def forward(self, x):
+        x1, x2 = torch.split(x, [self.one, self.two], dim=1)
+        x3 = self.conv123(self.conv12(self.conv1(x1)))
+        x4 = self.conv2(x2)
+        return self.spatial(x4) * x3 + self.channel(x3) * x4
+
+
+class FCM(nn.Module):
+    """Original FBRT-YOLO FCM block."""
+
+    def __init__(self, c1, c2):
+        super().__init__()
+        self.one = c1 // 4
+        self.two = c1 - c1 // 4
+        self.conv1 = Conv(self.one, self.one, 3, 1, 1)
+        self.conv12 = Conv(self.one, self.one, 3, 1, 1)
+        self.conv123 = Conv(self.one, c2, 1, 1)
+        self.conv2 = Conv(self.two, c2, 1, 1)
+        self.conv3 = Conv(c2, c2, 1, 1)
+        self.spatial = Spatial(c2)
+        self.channel = Channel(c2)
+
+    def forward(self, x):
+        x1, x2 = torch.split(x, [self.one, self.two], dim=1)
+        x3 = self.conv123(self.conv12(self.conv1(x1)))
+        x4 = self.conv2(x2)
+        x5 = self.spatial(x4) * x3 + self.channel(x3) * x4
+        return self.conv3(x5)
+
+
+class Pzconv(nn.Module):
+    """Original FBRT-YOLO Pzconv block."""
+
+    def __init__(self, c1, c2):
+        super().__init__()
+        if c1 != c2:
+            raise ValueError("Pzconv expects matching input/output channels.")
+        self.conv1 = nn.Conv2d(c1, c1, 3, 1, 1, groups=c1)
+        self.conv2 = Conv(c1, c1, 1, 1)
+        self.conv3 = nn.Conv2d(c1, c1, 5, 1, 2, groups=c1)
+        self.conv4 = Conv(c1, c1, 1, 1)
+        self.conv5 = nn.Conv2d(c1, c1, 7, 1, 3, groups=c1)
+
+    def forward(self, x):
+        x1 = self.conv1(x)
+        x2 = self.conv2(x1)
+        x3 = self.conv3(x2)
+        x4 = self.conv4(x3)
+        x5 = self.conv5(x4)
+        return x5 + x
+
+
+class Down(nn.Module):
+    """Original FBRT-YOLO downsampling block."""
+
+    def __init__(self, c1, c2):
+        super().__init__()
+        self.conv2 = Conv(c1, c1, 3, 2, 1, g=max(c1 // 2, 1), act=False)
+        self.conv4 = Conv(c1, c2, 1, 1)
+
+    def forward(self, x):
+        return self.conv4(self.conv2(x))

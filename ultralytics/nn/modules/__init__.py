@@ -51,10 +51,6 @@ from .block import (
     C2fCIB,
     SCDown,
     RepVGGDW,
-    SPPF_Light,
-    FPM,
-    VBOD,
-
 )
 from .conv import (
     CBAM,
@@ -63,15 +59,21 @@ from .conv import (
     Conv,
     Conv2,
     ConvTranspose,
+    Down,
     DWConv,
     DWConvTranspose2d,
+    FCM,
+    FCM_1,
+    FCM_2,
+    FCM_3,
     Focus,
     GhostConv,
     LightConv,
+    Pzconv,
     RepConv,
     SpatialAttention,
 )
-from .head import OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect
+from .head import OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect, SchemeOneDetect
 from .transformer import (
     AIFI,
     MLP,
@@ -84,6 +86,7 @@ from .transformer import (
     TransformerEncoderLayer,
     TransformerLayer,
 )
+from .OptiSAR_Net_Module import DAAM
 
 __all__ = (
     "Conv",
@@ -95,6 +98,12 @@ __all__ = (
     "ConvTranspose",
     "Focus",
     "GhostConv",
+    "FCM",
+    "FCM_1",
+    "FCM_2",
+    "FCM_3",
+    "Pzconv",
+    "Down",
     "ChannelAttention",
     "SpatialAttention",
     "CBAM",
@@ -149,7 +158,6 @@ __all__ = (
     "SCDown",
     "RepVGGDW",
     "v10Detect",
-    "SPPF_Light",
-    "FPM",
-    "VBOD"
+    "SchemeOneDetect",
+    "DAAM",
 )
