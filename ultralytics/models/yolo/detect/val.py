@@ -10,7 +10,7 @@ from ultralytics.data import build_dataloader, build_yolo_dataset, converter
 from ultralytics.engine.validator import BaseValidator
 from ultralytics.utils import LOGGER, ops
 from ultralytics.utils.checks import check_requirements
-from ultralytics.utils.metrics import ConfusionMatrix, DetMetrics, box_iou
+from ultralytics.utils.metrics import ConfusionMatrix, DetMetrics, ap_per_class, box_iou
 from ultralytics.utils.plotting import output_to_target, plot_images
 
 
@@ -76,6 +76,8 @@ class DetectionValidator(BaseValidator):
         self.seen = 0
         self.jdict = []
         self.stats = dict(tp=[], conf=[], pred_cls=[], target_cls=[])
+        self.area_ranges = {"S": (0.0, 32.0**2), "M": (32.0**2, 96.0**2), "L": (96.0**2, float("inf"))}
+        self.size_stats = {k: dict(tp=[], conf=[], pred_cls=[], target_cls=[]) for k in self.area_ranges}
 
     def get_desc(self):
         """Return a formatted string summarizing class metrics of YOLO model."""
@@ -129,6 +131,7 @@ class DetectionValidator(BaseValidator):
             nl = len(cls)
             stat["target_cls"] = cls
             if npr == 0:
+                self._update_size_stats(None, bbox, cls)
                 if nl:
                     for k in self.stats.keys():
                         self.stats[k].append(stat[k])
@@ -148,6 +151,7 @@ class DetectionValidator(BaseValidator):
                 stat["tp"] = self._process_batch(predn, bbox, cls)
                 if self.args.plots:
                     self.confusion_matrix.process_batch(predn, bbox, cls)
+            self._update_size_stats(predn, bbox, cls)
             for k in self.stats.keys():
                 self.stats[k].append(stat[k])
 
@@ -177,7 +181,8 @@ class DetectionValidator(BaseValidator):
 
         # 保存结果为 CSV 文件（仿照训练过程）
         if not self.training:  # 只在独立验证时保存，不在训练过程中的验证保存
-            csv_path = self.save_dir / "val_results.csv"
+            results_dict.update(self._size_ap_results())
+            csv_path = self.save_dir / "val_result.csv"
             keys = list(results_dict.keys())
             vals = list(results_dict.values())
 
@@ -202,9 +207,87 @@ class DetectionValidator(BaseValidator):
                 f.write(",".join(headers) + "\n")
                 f.write(",".join(values) + "\n")
 
-            LOGGER.info(f"\n验证结果已保存到：{csv_path}")
+            LOGGER.info(f"\nValidation results saved to: {csv_path}")
 
         return results_dict
+
+    @staticmethod
+    def _box_area(boxes):
+        """Compute xyxy box areas."""
+        if boxes.numel() == 0:
+            return boxes.new_zeros(0)
+        wh = (boxes[:, 2:4] - boxes[:, 0:2]).clamp(min=0)
+        return wh[:, 0] * wh[:, 1]
+
+    @staticmethod
+    def _area_mask(area, area_range):
+        """Return mask for a COCO-style area range."""
+        low, high = area_range
+        mask = area >= low
+        if np.isfinite(high):
+            mask &= area < high
+        return mask
+
+    def _update_size_stats(self, predn, gt_bboxes, gt_cls):
+        """Collect AP statistics for small, medium and large objects."""
+        predn = (
+            predn
+            if predn is not None
+            else torch.zeros((0, 6), device=self.device, dtype=gt_bboxes.dtype if gt_bboxes.numel() else torch.float32)
+        )
+        pred_area = self._box_area(predn[:, :4])
+        gt_area = self._box_area(gt_bboxes)
+
+        for name, area_range in self.area_ranges.items():
+            gt_mask = self._area_mask(gt_area, area_range)
+            pred_mask = (
+                self._area_mask(pred_area, area_range)
+                if len(predn)
+                else torch.zeros(0, dtype=torch.bool, device=self.device)
+            )
+
+            if len(predn) and len(gt_bboxes):
+                gt_in, cls_in = gt_bboxes[gt_mask], gt_cls[gt_mask]
+                gt_out, cls_out = gt_bboxes[~gt_mask], gt_cls[~gt_mask]
+                in_overlap = torch.zeros(len(predn), dtype=torch.bool, device=self.device)
+
+                if len(gt_in):
+                    iou_in = box_iou(gt_in, predn[:, :4]) * (cls_in[:, None] == predn[:, 5]).float()
+                    in_overlap = iou_in.max(0).values >= float(self.iouv[0])
+                    pred_mask |= in_overlap
+
+                if len(gt_out):
+                    iou_out = box_iou(gt_out, predn[:, :4]) * (cls_out[:, None] == predn[:, 5]).float()
+                    pred_mask &= ~((iou_out.max(0).values >= float(self.iouv[0])) & ~in_overlap)
+
+            pred_eval = predn[pred_mask]
+            stat = dict(
+                conf=pred_eval[:, 4] if len(pred_eval) else torch.zeros(0, device=self.device),
+                pred_cls=pred_eval[:, 5] if len(pred_eval) else torch.zeros(0, device=self.device),
+                tp=torch.zeros(len(pred_eval), self.niou, dtype=torch.bool, device=self.device),
+                target_cls=gt_cls[gt_mask],
+            )
+            if len(pred_eval) and gt_mask.any():
+                stat["tp"] = self._process_batch(pred_eval, gt_bboxes[gt_mask], gt_cls[gt_mask])
+
+            for k, v in stat.items():
+                self.size_stats[name][k].append(v)
+
+    def _size_ap_results(self):
+        """Calculate AP_S, AP_M and AP_L from collected size-specific statistics."""
+        results = {}
+        for name, stat in self.size_stats.items():
+            target_cls = torch.cat(stat["target_cls"], 0).cpu().numpy()
+            if target_cls.size == 0:
+                results[f"metrics/AP_{name}(B)"] = 0.0
+                continue
+
+            tp = torch.cat(stat["tp"], 0).cpu().numpy()
+            conf = torch.cat(stat["conf"], 0).cpu().numpy()
+            pred_cls = torch.cat(stat["pred_cls"], 0).cpu().numpy()
+            ap = ap_per_class(tp, conf, pred_cls, target_cls, plot=False, names=self.names)[5]
+            results[f"metrics/AP_{name}(B)"] = float(ap.mean()) if ap.size else 0.0
+        return results
 
     def print_results(self):
         """Prints training/validation set metrics per class."""
