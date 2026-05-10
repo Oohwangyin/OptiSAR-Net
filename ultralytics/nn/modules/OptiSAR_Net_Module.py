@@ -5,7 +5,9 @@ from .conv import Conv
 
 __all__ = (
     "DAAM",
+    "ASPE",
     "DAAMChannelAttention",
+    "DAAMChannelAttentionAlpha",
 )
 
 
@@ -24,6 +26,18 @@ class DAAMChannelAttention(nn.Module):
     def forward(self, daam_feat, target_feat):
         weight = self.sigmoid(self.conv(self.gap(daam_feat)))
         return target_feat + target_feat * weight
+
+
+class DAAMChannelAttentionAlpha(DAAMChannelAttention):
+    """DAAM semantic channel attention with learnable residual strength."""
+
+    def __init__(self, daam_channels, target_channels, alpha_init=0.1):
+        super().__init__(daam_channels, target_channels)
+        self.alpha = nn.Parameter(torch.tensor(float(alpha_init)))
+
+    def forward(self, daam_feat, target_feat):
+        weight = self.sigmoid(self.conv(self.gap(daam_feat)))
+        return target_feat + self.alpha * target_feat * weight
 
 
 class EnhancedConvolutionalBlock(nn.Module):
@@ -115,3 +129,33 @@ class DAAM(nn.Module):
         if self.use_auto_layer_scaling:
             ecb_output = self.layer_scale_ecb.unsqueeze(-1).unsqueeze(-1) * ecb_output
         return x + ecb_output
+
+
+class ASPE(nn.Module):
+    """Aircraft shape prior enhancement for shared optical/SAR geometric cues."""
+
+    def __init__(self, c1, c2, k=7, alpha_init=0.1):
+        super().__init__()
+        p = k // 2
+        self.proj = Conv(c1, c2, k=1) if c1 != c2 else nn.Identity()
+        self.local = Conv(c2, c2, k=3, g=c2)
+        self.horizontal = Conv(c2, c2, k=(1, k), p=(0, p), g=c2)
+        self.vertical = Conv(c2, c2, k=(k, 1), p=(p, 0), g=c2)
+        self.dilated = Conv(c2, c2, k=3, p=2, g=c2, d=2)
+        self.fuse = Conv(c2 * 4, c2, k=1)
+        self.gate = nn.Sequential(nn.Conv2d(c2, c2, 1, bias=True), nn.Sigmoid())
+        self.alpha = nn.Parameter(torch.tensor(float(alpha_init)))
+
+    def forward(self, x):
+        x = self.proj(x)
+        shape_feat = torch.cat(
+            (
+                self.local(x),
+                self.horizontal(x),
+                self.vertical(x),
+                self.dilated(x),
+            ),
+            dim=1,
+        )
+        shape_feat = self.fuse(shape_feat)
+        return x + self.alpha * shape_feat * self.gate(shape_feat)

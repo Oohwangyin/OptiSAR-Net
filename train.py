@@ -1,7 +1,7 @@
 from ultralytics import YOLO
 
 
-model = YOLO("DAAM-TDH.yaml")
+model = YOLO("DAAM.yaml")
 model.load("yolov8n.pt")
 
 model.train(
@@ -9,6 +9,6 @@ model.train(
     epochs=150,
     patience=40,
     batch=16,
-    imgsz=640,
-    project="runs/ablation/DAAM+TDH/epoch150",
+    imgsz=1024,
+    project="runs/ablation/DAAM/epoch150",
 )
