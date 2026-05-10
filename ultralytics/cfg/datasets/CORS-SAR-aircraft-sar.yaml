@@ -1,0 +1,8 @@
+# SAR-only subset of the merged-label CORS-SAR aircraft dataset
+path: ../OptiSAR-Net/datasets/CORS-SAR-aircraft-sar
+train: images
+val: images
+test: images
+
+names:
+  0: aircraft

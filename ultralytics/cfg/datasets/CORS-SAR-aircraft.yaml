@@ -1,0 +1,8 @@
+# CORS-SAR merged-label dataset for multi-source aircraft detection
+path: ../OptiSAR-Net/datasets/CORS-SAR-aircraft
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: aircraft
